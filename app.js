@@ -7,6 +7,9 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
 
+// ---------------------------
+// Routes
+// ---------------------------
 const authRoutes = require('./routes/auth');
 const completeRoutes = require('./routes/complete');
 const surveyRoutes = require('./routes/survey');
@@ -25,7 +28,7 @@ const app = express();
 // ---------------------------
 app.use(
 	cors({
-		origin: '*', // permet toutes les origines (pour dev). Tu peux mettre 'http://127.0.0.1:5500' si tu veux restreindre
+		origin: '*', // pour dev, tu peux restreindre à ton frontend en local ou ngrok
 		methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 		allowedHeaders: [
 			'Origin',
@@ -35,7 +38,7 @@ app.use(
 			'Content-Type',
 			'Authorization',
 		],
-	})
+	}),
 );
 
 // ---------------------------
@@ -58,7 +61,7 @@ mongoose
 	.catch(() => console.log('Connexion à MongoDB échouée !'));
 
 // ---------------------------
-// Routes
+// Routes API
 // ---------------------------
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', completeRoutes);
@@ -72,8 +75,21 @@ app.use('/api/opinion_2', opinion_2_Routes);
 app.use('/api/chat', chatRoutes);
 
 // ---------------------------
-// Upload
+// Uploads statiques
 // ---------------------------
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ---------------------------
+// Frontend statique + SPA catch-all
+// ---------------------------
+// Sert tout le dossier frontend
+app.use(express.static(path.join(__dirname, '../frontend')));
+
+// Middleware catch-all pour toutes les routes non-API
+// Toujours après les routes API
+app.use((req, res, next) => {
+	if (req.path.startsWith('/api')) return next();
+	res.sendFile(path.join(__dirname, '../frontend/browse-surveys.html'));
+});
 
 module.exports = app;

@@ -8,7 +8,10 @@ const passport = require('passport');
 
 require('../config/passport');
 
-const auth = require('../middlewares/auth');
+const auth = require( '../middlewares/auth' );
+
+const FRONTEND_URL =
+	process.env.FRONTEND_URL || 'http://127.0.0.1:5500/frontend';
 
 router.get(
 	'/google',
@@ -23,17 +26,16 @@ router.get(
 
 		if (!finalized) {
 			return res.redirect(
-				`http://127.0.0.1:5500/frontend/complete-profile.html?token=${tempToken}`,
+				`${FRONTEND_URL}/complete-profile.html?token=${tempToken}`,
 			);
 		}
 
 		if (finalized) {
-			return res.redirect(
-				`http://127.0.0.1:5500/frontend/browse-surveys.html?token=${token}`,
-			);
+			return res.redirect(`${FRONTEND_URL}/browse-surveys.html?token=${token}`);
 		}
 	},
 );
+
 
 router.get('/auth/failure', (req, res, next) => {
 	res.status(401).json({ message: "Echec de l'authentification" });

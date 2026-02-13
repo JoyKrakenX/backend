@@ -1,0 +1,29 @@
+/** @format */
+
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+	googleId: { type: String, required: true, unique: true },
+
+	email: { type: String, required: true, unique: true },
+
+	name: { type: String },
+	picture: { type: String },
+
+	pseudo: {
+		type: String,
+		unique: true,
+		sparse: true,
+		trim: true,
+	},
+	birthdate: {
+		type: Date,
+	},
+	gender: {
+		type: String,
+		enum: ['homme', 'femme'],
+	},
+	createdAt: { type: Date, default: Date.now },
+});
+
+module.exports = mongoose.model('User', userSchema);

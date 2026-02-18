@@ -9,9 +9,8 @@ const passport = require('passport');
 require('../config/passport');
 
 const auth = require( '../middlewares/auth' );
-
-const FRONTEND_URL =
-	process.env.FRONTEND_URL || 'http://127.0.0.1:5500/frontend';
+const User = require('../models/User');
+const { buildFrontendUrl } = require('../utils/publicUrls');
 
 router.get(
 	'/google',
@@ -26,12 +25,14 @@ router.get(
 
 		if (!finalized) {
 			return res.redirect(
-				`${FRONTEND_URL}/complete-profile.html?token=${tempToken}`,
+				buildFrontendUrl(req, 'complete-profile.html', { token: tempToken }),
 			);
 		}
 
 		if (finalized) {
-			return res.redirect(`${FRONTEND_URL}/browse-surveys.html?token=${token}`);
+			return res.redirect(
+				buildFrontendUrl(req, 'browse-surveys.html', { token }),
+			);
 		}
 	},
 );
@@ -45,8 +46,27 @@ router.get('/auth/failure', (req, res, next) => {
 const userController = require('../controllers/authController');
 router.put('/pseudo', auth, userController.updatePseudo);
 
-router.get('/me', auth, (req, res, next) => {
-	res.status(200).json({ userId: req.userId, pseudo: req.userPseudo });
+router.get('/me', auth, async (req, res, next) => {
+	try {
+		const user = await User.findById(req.userId).select(
+			'_id pseudo email role name picture',
+		);
+		if (!user) {
+			return res.status(404).json({ message: 'Utilisateur introuvable.' });
+		}
+
+		return res.status(200).json({
+			userId: user._id.toString(),
+			pseudo: user.pseudo,
+			email: user.email,
+			name: user.name || null,
+			picture: user.picture || null,
+			role: user.role || 'user',
+		});
+	} catch (err) {
+		console.error('Erreur /api/auth/me:', err);
+		return res.status(500).json({ message: 'Erreur serveur.' });
+	}
 });
 
 module.exports = router;

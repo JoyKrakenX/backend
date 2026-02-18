@@ -3,58 +3,139 @@
 const ChatMessage = require('../models/ChatMessage');
 
 module.exports = (io) => {
+	const roomPresence = new Map();
+	io.chatPresence = roomPresence;
+
+	const ensureRoomPresence = (roomName) => {
+		if (!roomPresence.has(roomName)) {
+			roomPresence.set(roomName, new Map());
+		}
+		return roomPresence.get(roomName);
+	};
+
+	const buildPresencePayload = (roomName) => {
+		const roomUsers = roomPresence.get(roomName);
+		const users =
+			roomUsers ?
+				Array.from(roomUsers.values()).map((entry) => ({
+					userId: entry.userId,
+					pseudo: entry.pseudo,
+					picture: entry.picture || null,
+				}))
+			:	[];
+
+		return {
+			roomId: roomName,
+			onlineCount: users.length,
+			users,
+		};
+	};
+
+	const emitRoomPresence = (roomName) => {
+		io.to(roomName).emit('onlineUsersState', buildPresencePayload(roomName));
+	};
+
+	const clearSocketPresence = (socket) => {
+		const roomName = socket.data?.roomName;
+		const userId = socket.data?.userId;
+
+		if (!roomName || !userId) {
+			return null;
+		}
+
+		const roomUsers = roomPresence.get(roomName);
+		if (!roomUsers) {
+			return null;
+		}
+
+		const userEntry = roomUsers.get(userId);
+		if (!userEntry) {
+			return null;
+		}
+
+		userEntry.sockets.delete(socket.id);
+		let isLastSocketForUser = false;
+
+		if (userEntry.sockets.size === 0) {
+			roomUsers.delete(userId);
+			isLastSocketForUser = true;
+		}
+
+		if (roomUsers.size === 0) {
+			roomPresence.delete(roomName);
+		}
+
+		return {
+			roomName,
+			userId,
+			pseudo: userEntry.pseudo,
+			isLastSocketForUser,
+		};
+	};
+
 	io.on('connection', (socket) => {
 		console.log('Utilisateur connecté au chat:', socket.id);
 
 		// Rejoindre une room spécifique à un sondage
-		socket.on('joinChatRoom', ({ surveyId, userId, pseudo, type }) => {
+		socket.on('joinChatRoom', ({ surveyId, userId, pseudo, picture }) => {
+			if (!surveyId || !userId || !pseudo) return;
+
 			const roomName = `survey-${surveyId}`;
+
+			if (socket.data?.roomName && socket.data.roomName !== roomName) {
+				const previousRoomName = socket.data.roomName;
+				const previousRemoval = clearSocketPresence(socket);
+				socket.leave(previousRoomName);
+
+				if (previousRemoval?.isLastSocketForUser) {
+					socket.to(previousRoomName).emit('userLeft', {
+						userId: previousRemoval.userId,
+						pseudo: previousRemoval.pseudo || 'Utilisateur',
+						timestamp: new Date(),
+						message: `${previousRemoval.pseudo || 'Utilisateur'} a quitté le chat`,
+					});
+				}
+				emitRoomPresence(previousRoomName);
+			}
+
 			socket.join(roomName);
+			socket.data.roomName = roomName;
+			socket.data.userId = String(userId);
+			socket.data.pseudo = pseudo;
+			socket.data.picture = picture || null;
+
+			const roomUsers = ensureRoomPresence(roomName);
+			const normalizedUserId = String(userId);
+			const existingEntry = roomUsers.get(normalizedUserId);
+			const isFirstSocketForUser = !existingEntry;
+			const userEntry =
+				existingEntry || {
+					userId: normalizedUserId,
+					pseudo,
+					picture: picture || null,
+					sockets: new Set(),
+				};
+
+			userEntry.pseudo = pseudo || userEntry.pseudo;
+			userEntry.picture = picture || userEntry.picture || null;
+			userEntry.sockets.add(socket.id);
+			roomUsers.set(normalizedUserId, userEntry);
 
 			console.log(
 				`Utilisateur ${pseudo} (${userId}) a rejoint le chat du sondage ${surveyId}`
 			);
 
 			// Notifier les autres utilisateurs (optionnel)
-			socket.to(roomName).emit('userJoined', {
-				userId,
-				pseudo,
-				timestamp: new Date(),
-				message: `${pseudo} a rejoint le chat`,
-			});
-
-			// Envoyer l'historique des 50 derniers messages
-			ChatMessage.find({
-				surveyId,
-				surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
-			})
-				.sort({ createdAt: -1 })
-				.limit(50)
-				.populate('userId', 'pseudo picture')
-				.lean()
-				.then((messages) => {
-					const formattedMessages = messages.reverse().map((msg) => ({
-						...msg,
-						id: msg._id,
-						user: {
-							id: msg.userId ? msg.userId._id : null,
-							pseudo: msg.userPseudo || 'Utilisateur',
-							picture:
-								msg.userId && msg.userId.picture
-									? msg.userId.picture
-									: 'https://ui-avatars.com/api/?name=' +
-									  encodeURIComponent(msg.userPseudo || 'Utilisateur') +
-									  '&background=6366f1&color=fff',
-						},
-						replyTo: msg.replyTo,
-						replyToInfo: msg.replyToInfo,
-					}));
-
-					socket.emit('chatHistory', formattedMessages);
-				})
-				.catch((err) => {
-					console.error('Erreur récupération historique:', err);
+			if (isFirstSocketForUser) {
+				socket.to(roomName).emit('userJoined', {
+					userId: normalizedUserId,
+					pseudo,
+					timestamp: new Date(),
+					message: `${pseudo} a rejoint le chat`,
 				});
+			}
+
+			emitRoomPresence(roomName);
 		});
 
 		// Gérer l'envoi de message via Socket.IO
@@ -190,15 +271,21 @@ module.exports = (io) => {
 
 				await chatMessage.save();
 
+				const actorUserLiked = chatMessage.likes.some(
+					(id) => id.toString() === userId
+				);
+				const actorUserDisliked = chatMessage.dislikes.some(
+					(id) => id.toString() === userId
+				);
+
 				// Diffuser la mise à jour
 				io.to(`survey-${chatMessage.surveyId}`).emit('messageUpdated', {
-					messageId: chatMessage._id,
+					messageId: chatMessage._id.toString(),
 					likeCount: chatMessage.likes.length,
 					dislikeCount: chatMessage.dislikes.length,
-					userLiked: chatMessage.likes.some((id) => id.toString() === userId),
-					userDisliked: chatMessage.dislikes.some(
-						(id) => id.toString() === userId
-					),
+					actorUserId: userId,
+					actorUserLiked,
+					actorUserDisliked,
 				});
 			} catch (error) {
 				console.error('Erreur messageReaction:', error);
@@ -206,25 +293,47 @@ module.exports = (io) => {
 		});
 
 		// Quitter une room
-		socket.on('leaveChatRoom', ({ surveyId, userId, pseudo }) => {
-			const roomName = `survey-${surveyId}`;
+		socket.on('leaveChatRoom', ({ surveyId, userId, pseudo } = {}) => {
+			const roomName = socket.data?.roomName || (surveyId ? `survey-${surveyId}` : null);
+			if (!roomName) return;
+
 			socket.leave(roomName);
+			const removal = clearSocketPresence(socket);
 
-			// Notifier les autres utilisateurs (optionnel)
-			socket.to(roomName).emit('userLeft', {
-				userId,
-				pseudo,
-				timestamp: new Date(),
-				message: `${pseudo} a quitté le chat`,
-			});
+			if (removal?.isLastSocketForUser) {
+				socket.to(roomName).emit('userLeft', {
+					userId: removal.userId || String(userId || ''),
+					pseudo: removal.pseudo || pseudo || 'Utilisateur',
+					timestamp: new Date(),
+					message: `${removal.pseudo || pseudo || 'Utilisateur'} a quitté le chat`,
+				});
+			}
 
-			console.log(
-				`Utilisateur ${pseudo} a quitté le chat du sondage ${surveyId}`
-			);
+			emitRoomPresence(roomName);
+
+			socket.data.roomName = null;
+			socket.data.userId = null;
+			socket.data.pseudo = null;
+			socket.data.picture = null;
+
+			console.log(`Utilisateur ${pseudo || socket.id} a quitté le chat ${roomName}`);
 		});
 
 		// Déconnexion
 		socket.on('disconnect', () => {
+			const removal = clearSocketPresence(socket);
+			if (removal) {
+				if (removal.isLastSocketForUser) {
+					socket.to(removal.roomName).emit('userLeft', {
+						userId: removal.userId,
+						pseudo: removal.pseudo || 'Utilisateur',
+						timestamp: new Date(),
+						message: `${removal.pseudo || 'Utilisateur'} a quitté le chat`,
+					});
+				}
+				emitRoomPresence(removal.roomName);
+			}
+
 			console.log('Utilisateur déconnecté du chat:', socket.id);
 		});
 	});

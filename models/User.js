@@ -9,6 +9,12 @@ const userSchema = new mongoose.Schema({
 
 	name: { type: String },
 	picture: { type: String },
+	role: {
+		type: String,
+		enum: ['user', 'support', 'admin'],
+		default: 'user',
+		index: true,
+	},
 
 	pseudo: {
 		type: String,

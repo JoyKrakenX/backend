@@ -1,11 +1,11 @@
 /** @format */
 
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const passport = require('passport');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const path = require('path');
 
 // ---------------------------
 // Routes
@@ -19,7 +19,17 @@ const survey_2_Routes = require('./routes/survey_2');
 const allSurveysRoutes = require('./routes/allSurveys');
 const mySurveysRoutes = require('./routes/mySurveys');
 const opinion_2_Routes = require('./routes/opinion_2');
+const surveyFlashRoutes = require('./routes/surveyFlash');
+const surveyFlash2Routes = require('./routes/surveyFlash_2');
+const opinionFlashRoutes = require('./routes/opinionFlash');
+const opinionFlash2Routes = require('./routes/opinionFlash_2');
 const chatRoutes = require('./routes/chat');
+const newsletterRoutes = require('./routes/newsletter');
+const supportRoutes = require('./routes/support');
+const supportChatRoutes = require('./routes/supportChat');
+const pushRoutes = require('./routes/push');
+const publicRoutes = require('./routes/public');
+const privacySettingsRoutes = require('./routes/privacySettings');
 
 const app = express();
 
@@ -45,6 +55,7 @@ app.use(
 // Body parser
 // ---------------------------
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ---------------------------
 // Passport
@@ -72,7 +83,17 @@ app.use('/api/survey_2', survey_2_Routes);
 app.use('/api/all-surveys', allSurveysRoutes);
 app.use('/api/my-surveys', mySurveysRoutes);
 app.use('/api/opinion_2', opinion_2_Routes);
+app.use('/api/survey-flash', surveyFlashRoutes);
+app.use('/api/survey-2-flash', surveyFlash2Routes);
+app.use('/api/opinion-flash', opinionFlashRoutes);
+app.use('/api/opinion-2-flash', opinionFlash2Routes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/newsletter', newsletterRoutes);
+app.use('/api/support/chat', supportChatRoutes);
+app.use('/api/support', supportRoutes);
+app.use('/api/push', pushRoutes);
+app.use('/api/public', publicRoutes);
+app.use('/api/privacy', privacySettingsRoutes);
 
 // ---------------------------
 // Uploads statiques

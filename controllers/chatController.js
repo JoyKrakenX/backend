@@ -314,14 +314,22 @@ exports.toggleMessageLike = async (req, res, next) => {
 
 		await chatMessage.save();
 
+		const actorUserLiked = chatMessage.likes.some(
+			(id) => id.toString() === userId
+		);
+		const actorUserDisliked = chatMessage.dislikes.some(
+			(id) => id.toString() === userId
+		);
+
 		// Émettre la mise à jour via Socket.IO
 		const io = req.app.get('io');
 		io.to(`survey-${chatMessage.surveyId}`).emit('messageUpdated', {
-			messageId: chatMessage._id,
+			messageId: chatMessage._id.toString(),
 			likeCount: chatMessage.likes.length,
 			dislikeCount: chatMessage.dislikes.length,
-			userLiked: chatMessage.likes.some((id) => id.toString() === userId),
-			userDisliked: chatMessage.dislikes.some((id) => id.toString() === userId),
+			actorUserId: userId,
+			actorUserLiked,
+			actorUserDisliked,
 		});
 
 		res.status(200).json({
@@ -377,8 +385,14 @@ exports.getChatStats = async (req, res, next) => {
 		let onlineUsersCount = 0;
 		const io = req.app.get('io');
 		if (io) {
-			const room = io.sockets.adapter.rooms.get(`survey-${surveyId}`);
-			onlineUsersCount = room ? room.size : 0;
+			const roomName = `survey-${surveyId}`;
+			const presenceStore = io.chatPresence;
+			if (presenceStore && presenceStore.get(roomName)) {
+				onlineUsersCount = presenceStore.get(roomName).size;
+			} else {
+				const room = io.sockets.adapter.rooms.get(roomName);
+				onlineUsersCount = room ? room.size : 0;
+			}
 		}
 
 		// Dernier message

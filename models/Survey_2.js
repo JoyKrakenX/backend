@@ -6,6 +6,7 @@ const survey_2_Schema = mongoose.Schema({
 	theme: { type: String, required: true, unique: true },
 	contexte: { type: String },
 	question: { type: String, required: true },
+	explain: { type: Boolean, default: true },
 	reponse_1: { type: String, required: true },
 	reponse_2: { type: String, required: true },
 	reponse_3: { type: String, default: 'Autre point de vue' },

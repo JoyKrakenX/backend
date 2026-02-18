@@ -1,11 +1,49 @@
 /** @format */
 
-const Opinion_2 = require('../models/Opinion_2');
-const Survey_2 = require('../models/Survey_2');
-const Survey = require('../models/Survey');
 const mongoose = require('mongoose');
 
-exports.createSurvey = async (req, res, next) => {
+const Opinion_2 = require('../models/Opinion_2');
+const Opinion2Flash = require('../models/Opinion_2_Flash');
+const Survey_2 = require('../models/Survey_2');
+const { normalizeQuestion } = require('../utils/questionNormalizer');
+const {
+	broadcastSurveyNewPush,
+	broadcastSurveyClosedPush,
+} = require('../services/supportPushService');
+const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
+
+const parseExplainFlag = (value) => {
+	if (typeof value === 'boolean') return value;
+	if (typeof value === 'string') {
+		return value.trim().toLowerCase() !== 'false';
+	}
+	if (typeof value === 'number') {
+		return value !== 0;
+	}
+	return true;
+};
+
+const toObjectId = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
+
+const getMultipleOpinionModel = (survey) =>
+	survey && survey.explain === false ? Opinion2Flash : Opinion_2;
+
+async function getMultipleCounts(surveyId, OpinionModel) {
+	const [reponse_1, reponse_2, reponse_3] = await Promise.all([
+		OpinionModel.countDocuments({ surveyId, answer: 'reponse_1' }),
+		OpinionModel.countDocuments({ surveyId, answer: 'reponse_2' }),
+		OpinionModel.countDocuments({ surveyId, answer: 'reponse_3' }),
+	]);
+
+	return {
+		reponse_1,
+		reponse_2,
+		reponse_3,
+		totalOpinions: reponse_1 + reponse_2 + reponse_3,
+	};
+}
+
+exports.createSurvey = async (req, res) => {
 	try {
 		delete req.body._id;
 		const theme = (req.body.theme || '').trim();
@@ -21,7 +59,8 @@ exports.createSurvey = async (req, res, next) => {
 		const survey = new Survey_2({
 			theme: realTheme,
 			contexte: req.body.contexte,
-			question: req.body.question,
+			question: normalizeQuestion(req.body.question),
+			explain: parseExplainFlag(req.body.explain),
 			reponse_1: req.body.reponse_1,
 			reponse_2: req.body.reponse_2,
 			reponse_3: req.body.reponse_3 || 'Autre point de vue',
@@ -29,9 +68,33 @@ exports.createSurvey = async (req, res, next) => {
 		});
 
 		const savedSurvey = await survey.save();
-		res
-			.status(201)
-			.json({ message: 'Survey saved !', surveyId: savedSurvey._id });
+
+		broadcastSurveyNewPush({
+			surveyId: savedSurvey._id,
+			surveyType: 'multiple',
+			theme: savedSurvey.theme,
+			creatorName: req.userPseudo || 'Administrateur',
+			excludeUserId: req.userId,
+		}).catch((error) =>
+			console.error('push survey.new multiple failed:', error?.message || error),
+		);
+
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'created',
+			surveyId: savedSurvey._id,
+			type: 'multiple',
+			explain: savedSurvey.explain,
+			isClosed: Boolean(savedSurvey.isClosed),
+			ownerUserId: savedSurvey.userId,
+			createdAt: savedSurvey.createdAt,
+			endedAt: savedSurvey.endedAt,
+		});
+
+		res.status(200).json({
+			message: 'Survey saved !',
+			surveyId: savedSurvey._id,
+			explain: savedSurvey.explain,
+		});
 	} catch (error) {
 		if (error && error.code === 11000) {
 			return res
@@ -43,10 +106,9 @@ exports.createSurvey = async (req, res, next) => {
 	}
 };
 
-exports.getOneSurvey = (req, res, next) => {
+exports.getOneSurvey = (req, res) => {
 	const id = req.params.id;
 
-	// Vérifier que c'est un ObjectId valide
 	if (!mongoose.Types.ObjectId.isValid(id)) {
 		return res.status(400).json({ message: 'ID invalide' });
 	}
@@ -61,24 +123,21 @@ exports.getOneSurvey = (req, res, next) => {
 		.catch((error) => res.status(500).json({ error }));
 };
 
-exports.submitOpinion = async (req, res, next) => {
+exports.submitOpinion = async (req, res) => {
 	try {
-		console.log('=== DÉBUT submitOpinion ===');
-		console.log('Headers:', req.headers);
-		console.log('User ID:', req.userId);
-		console.log('User Pseudo:', req.userPseudo);
-		console.log('Survey ID:', req.params.id);
-		console.log('Body:', req.body);
-
 		const surveyId = req.params.id;
 		const survey = await Survey_2.findById(surveyId);
 
 		if (!survey) {
-			console.log('Sondage non trouvé');
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		console.log('Sondage trouvé, isClosed:', survey.isClosed);
+		if (survey.explain === false) {
+			return res.status(400).json({
+				message:
+					'Ce sondage est en mode Flash. Utilisez les endpoints Flash dédiés.',
+			});
+		}
 
 		if (survey.isClosed) {
 			return res.status(403).json({
@@ -87,17 +146,14 @@ exports.submitOpinion = async (req, res, next) => {
 		}
 
 		const existingOpinion = await Opinion_2.findOne({
-			surveyId: mongoose.Types.ObjectId.createFromHexString(surveyId),
-
+			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 		});
-
-		console.log('Opinion existante:', existingOpinion);
 
 		if (existingOpinion) {
 			return res.status(403).json({
 				message:
-					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des réultats.',
+					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
 			});
 		}
 
@@ -106,22 +162,18 @@ exports.submitOpinion = async (req, res, next) => {
 		}
 
 		if (!req.body.reason || req.body.reason.trim() === '') {
-			console.log('Raison manquante ou vide');
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 
 		const opinion = new Opinion_2({
 			answer: req.body.choice,
 			reason: req.body.reason,
-			surveyId: mongoose.Types.ObjectId.createFromHexString(surveyId),
+			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 			userPseudo: req.userPseudo,
 		});
 
-		console.log('Opinion à sauvegarder:', opinion);
-
 		await opinion.save();
-		console.log('Opinion sauvegardée avec succès');
 
 		res.status(201).json({ message: 'Opinion enregistrée !' });
 	} catch (err) {
@@ -136,23 +188,35 @@ exports.submitOpinion = async (req, res, next) => {
 	}
 };
 
-exports.getFlashStats = async (req, res, next) => {
+exports.getFlashStats = async (req, res) => {
 	try {
-		const totalOpinions = await Opinion_2.countDocuments({
-			surveyId: req.params.id,
-		});
+		const surveyId = req.params.id;
+		const survey = await Survey_2.findById(surveyId).select('explain').lean();
+
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const totalOpinions = await OpinionModel.countDocuments({ surveyId });
+
 		res.status(200).json({ totalOpinions });
 	} catch (error) {
+		console.error(error);
 		res.status(500).json({ message: 'Erreur stats sondage multiple' });
 	}
 };
 
-exports.closeSurvey = async (req, res, next) => {
+exports.closeSurvey = async (req, res) => {
 	try {
 		const survey = await Survey_2.findById(req.params.id);
 
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		if (survey.userId?.toString() !== req.userId?.toString()) {
+			return res.status(403).json({ message: 'Non autorise' });
 		}
 
 		if (survey.isClosed) {
@@ -164,13 +228,62 @@ exports.closeSurvey = async (req, res, next) => {
 
 		await survey.save();
 
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const participantUserIds = await OpinionModel.distinct('userId', {
+			surveyId: survey._id,
+		});
+
+		broadcastSurveyClosedPush({
+			surveyId: survey._id,
+			surveyType: 'multiple',
+			theme: survey.theme,
+			participantUserIds,
+		}).catch((error) =>
+			console.error('push survey.closed multiple failed:', error?.message || error),
+		);
+
+		if (survey.explain === false) {
+			const io = req.app.get('io');
+			const room = `flash-multiple-${survey._id}`;
+			const counts = await getMultipleCounts(survey._id, Opinion2Flash);
+
+			io.to(room).emit('flash:counts', {
+				surveyId: String(survey._id),
+				type: 'multiple',
+				totalOpinions: counts.totalOpinions,
+				counts: {
+					reponse_1: counts.reponse_1,
+					reponse_2: counts.reponse_2,
+					reponse_3: counts.reponse_3,
+				},
+				isClosed: true,
+			});
+
+			io.to(room).emit('flash:closed', {
+				surveyId: String(survey._id),
+				type: 'multiple',
+				endedAt: survey.endedAt,
+			});
+		}
+
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'closed',
+			surveyId: survey._id,
+			type: 'multiple',
+			explain: survey.explain,
+			isClosed: true,
+			ownerUserId: survey.userId,
+			createdAt: survey.createdAt,
+			endedAt: survey.endedAt,
+		});
+
 		res.status(200).json({ message: 'Sondage clôturé avec succès.' });
 	} catch (error) {
 		res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
 
-exports.getDetailedStats = async (req, res, next) => {
+exports.getDetailedStats = async (req, res) => {
 	try {
 		const surveyId = req.params.id;
 
@@ -189,7 +302,8 @@ exports.getDetailedStats = async (req, res, next) => {
 			});
 		}
 
-		const opinions = await Opinion_2.find({ surveyId }).lean();
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const opinions = await OpinionModel.find({ surveyId }).lean();
 
 		const counts = {
 			reponse_1: 0,
@@ -198,20 +312,18 @@ exports.getDetailedStats = async (req, res, next) => {
 		};
 
 		const enrichedOpinions = opinions.map((op) => {
-			counts[op.answer]++;
+			if (counts[op.answer] !== undefined) counts[op.answer] += 1;
 
 			const likeCount = (op.likes && op.likes.length) || 0;
 			const dislikeCount = (op.dislikes && op.dislikes.length) || 0;
 
-			const userLiked =
-				req.userId ?
-					(op.likes || []).some((id) => id.toString() === req.userId)
-				:	false;
+			const userLiked = req.userId
+				? (op.likes || []).some((id) => id.toString() === String(req.userId))
+				: false;
 
-			const userDisliked =
-				req.userId ?
-					(op.dislikes || []).some((id) => id.toString() === req.userId)
-				:	false;
+			const userDisliked = req.userId
+				? (op.dislikes || []).some((id) => id.toString() === String(req.userId))
+				: false;
 			return {
 				...op,
 				likeCount,

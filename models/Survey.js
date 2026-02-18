@@ -6,6 +6,7 @@ const surveySchema = mongoose.Schema({
 	theme: { type: String, required: true, unique: true },
 	contexte: { type: String },
 	question: { type: String, required: true },
+	explain: { type: Boolean, default: true },
 	createdAt: { type: Date, default: Date.now },
 	userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 	isClosed: { type: Boolean, default: false },

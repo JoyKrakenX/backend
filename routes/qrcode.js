@@ -1,262 +1,317 @@
 /** @format */
 
+const crypto = require('crypto');
 const express = require('express');
-const router = express.Router();
-const QRcode = require('qrcode');
-const path = require('path');
 const fs = require('fs');
-const sharp = require('sharp');
 const mongoose = require('mongoose');
+const path = require('path');
+const QRcode = require('qrcode');
 
 const Survey = require('../models/Survey');
 const Survey_2 = require('../models/Survey_2');
+const { buildFrontendUrl } = require('../utils/publicUrls');
+
+const router = express.Router();
+const QR_LAYOUT_VERSION = 'layoutV4';
+
+function resolveTargetPages(type, explain) {
+	if (type === 'binary') {
+		return {
+			answer: explain ? 'survey.html' : 'survey-flash-binary.html',
+			results: explain ? 'survey-results.html' : 'survey-results-admin.html',
+		};
+	}
+
+	return {
+		answer: explain ? 'survey-choices.html' : 'survey-flash-multiple.html',
+		results:
+			explain ? 'survey-choices-results.html' : 'survey-results-admin.html',
+	};
+}
+
+function escapeXml(input) {
+	return String(input || '')
+		.replaceAll('&', '&amp;')
+		.replaceAll('<', '&lt;')
+		.replaceAll('>', '&gt;')
+		.replaceAll('"', '&quot;')
+		.replaceAll("'", '&apos;');
+}
+
+function buildCacheKey(targetUrl, type, explain) {
+	const payload = `${targetUrl}|${type}|${explain ? 'classic' : 'flash'}|${QR_LAYOUT_VERSION}`;
+	return crypto.createHash('sha1').update(payload).digest('hex').slice(0, 16);
+}
+
+function cleanupOldQrFiles(dir, surveyId, activeFilename) {
+	try {
+		const prefix = `survey-${surveyId}-`;
+		const files = fs.readdirSync(dir);
+		files
+			.filter(
+				(file) =>
+					file.startsWith(prefix) &&
+					(file.endsWith('.svg') || file.endsWith('.png')) &&
+					file !== activeFilename,
+			)
+			.forEach((file) => {
+				try {
+					fs.unlinkSync(path.join(dir, file));
+				} catch (_error) {
+					// Ignore cleanup failures.
+				}
+			});
+	} catch (_error) {
+		// Ignore cleanup failures.
+	}
+}
+
+function parseSvgMarkup(svgMarkup) {
+	const cleaned = String(svgMarkup || '')
+		.replace(/<\?xml[\s\S]*?\?>/gi, '')
+		.replace(/<!DOCTYPE[\s\S]*?>/gi, '')
+		.trim();
+
+	const match = cleaned.match(/<svg\b([^>]*)>([\s\S]*?)<\/svg>/i);
+	if (!match) {
+		return {
+			viewBox: '0 0 300 300',
+			content: cleaned,
+		};
+	}
+
+	const attrs = match[1] || '';
+	const content = match[2] || '';
+
+	const viewBoxMatch = attrs.match(/viewBox\s*=\s*["']([^"']+)["']/i);
+	const widthMatch = attrs.match(/width\s*=\s*["']([^"']+)["']/i);
+	const heightMatch = attrs.match(/height\s*=\s*["']([^"']+)["']/i);
+
+	let viewBox = viewBoxMatch?.[1] || '';
+
+	if (!viewBox) {
+		const width = Number.parseFloat(widthMatch?.[1] || '');
+		const height = Number.parseFloat(heightMatch?.[1] || '');
+		if (Number.isFinite(width) && Number.isFinite(height)) {
+			viewBox = `0 0 ${width} ${height}`;
+		}
+	}
+
+	return {
+		viewBox: viewBox || '0 0 300 300',
+		content,
+	};
+}
+
+function wrapTextToLines(text, maxCharsPerLine) {
+	const words = String(text || '').split(/\s+/).filter(Boolean);
+	const lines = [];
+	let current = '';
+
+	for (const word of words) {
+		if (!current) {
+			current = word;
+			continue;
+		}
+		if ((current + ' ' + word).length <= maxCharsPerLine) {
+			current += ` ${word}`;
+			continue;
+		}
+		lines.push(current);
+		current = word;
+	}
+
+	if (current) lines.push(current);
+	return lines.length ? lines : ['Sondage'];
+}
+
+function readLogoDataUri(logoPath) {
+	if (!fs.existsSync(logoPath)) return null;
+	const raw = fs.readFileSync(logoPath);
+	const ext = path.extname(logoPath).toLowerCase();
+	const mime =
+		ext === '.svg' ? 'image/svg+xml'
+		: ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+		: 'image/png';
+	return `data:${mime};base64,${raw.toString('base64')}`;
+}
+
+function resolveLogoPath() {
+	const candidates = [
+		path.join(__dirname, '../uploads/logo.svg'),
+		path.join(__dirname, '../uploads/logo.png'),
+		path.join(__dirname, '../uploads/logo.jpg'),
+		path.join(__dirname, '../uploads/logo.jpeg'),
+		path.join(__dirname, '../../frontend/assets/logo.svg'),
+		path.join(__dirname, '../../frontend/assets/logo.png'),
+	];
+
+	for (const candidate of candidates) {
+		if (fs.existsSync(candidate)) return candidate;
+	}
+
+	return null;
+}
 
 router.post('/generate', async (req, res) => {
-	console.log('Requête QR reçue :', req.body);
-
 	try {
 		const { surveyId, type } = req.body;
+		const force = Boolean(req.body.force);
 
-		// -----------------------------
-		// Validation de l'ID
-		// -----------------------------
 		if (!surveyId || !mongoose.Types.ObjectId.isValid(surveyId)) {
-			console.log('ID invalide :', surveyId);
 			return res.status(400).json({ message: 'ID invalide' });
 		}
 
-		// -----------------------------
-		// Récupération du bon modèle
-		// -----------------------------
-		let survey;
-		let targetUrl;
-
-		// Frontend base URL (can be overridden with env FRONTEND_BASE_URL)
-		const FRONTEND_BASE_URL =
-			process.env.FRONTEND_BASE_URL || 'http://127.0.0.1:5500/frontend';
-
-		if (type === 'binary') {
-			survey = await Survey.findById(surveyId);
-			// Use canonical public URL with id and type query params (scannable)
-			targetUrl = `${FRONTEND_BASE_URL}/survey.html?id=${surveyId}&type=binary`;
-		} else if (type === 'multiple') {
-			survey = await Survey_2.findById(surveyId);
-			// For multiple-choice, point to the choices page with id & type
-			targetUrl = `${FRONTEND_BASE_URL}/survey-choices.html?id=${surveyId}&type=multiple`;
-		} else {
-			console.log('Type de sondage invalide :', type);
+		if (type !== 'binary' && type !== 'multiple') {
 			return res.status(400).json({ message: 'Type de sondage invalide' });
 		}
 
+		const survey =
+			type === 'binary' ?
+				await Survey.findById(surveyId).lean()
+			: 	await Survey_2.findById(surveyId).lean();
+
 		if (!survey) {
-			console.log('Sondage introuvable :', surveyId);
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		const themeText = survey.theme;
-		console.log('Thème du sondage :', themeText);
+		const explain = survey.explain !== false;
+		const pages = resolveTargetPages(type, explain);
+		const answerQuery = { id: surveyId, type };
+		const isFlashSurvey = explain === false;
+		const resultsQuery =
+			isFlashSurvey ?
+				{ Id: surveyId, type, flash: 1 }
+			: type === 'binary' ?
+				{ id: surveyId, type }
+			:	{ Id: surveyId, id: surveyId, type };
 
-		// -----------------------------
-		// Dossier de stockage
-		// -----------------------------
-		const dir = path.join(__dirname, '../uploads/qrcodes');
-		if (!fs.existsSync(dir)) {
-			console.log('Création du dossier :', dir);
-			fs.mkdirSync(dir, { recursive: true });
+		const urls = {
+			answer: buildFrontendUrl(req, pages.answer, answerQuery),
+			results: buildFrontendUrl(req, pages.results, resultsQuery),
+			dashboard: buildFrontendUrl(req, 'my-surveys.html'),
+		};
+
+		const targetUrl = urls.answer;
+		const cacheKey = buildCacheKey(targetUrl, type, explain);
+
+		const outputDir = path.join(__dirname, '../uploads/qrcodes');
+		if (!fs.existsSync(outputDir)) {
+			fs.mkdirSync(outputDir, { recursive: true });
 		}
 
-		const outputPath = path.join(dir, `survey-${surveyId}.png`);
-		console.log('Chemin de sortie :', outputPath);
+		const filename = `survey-${surveyId}-${cacheKey}.svg`;
+		const outputPath = path.join(outputDir, filename);
+		const qrPath = `/uploads/qrcodes/${filename}`;
 
-		// -----------------------------
-		// Cache QR existant (sauf si force=true)
-		// -----------------------------
-		const force = !!req.body.force;
 		if (!force && fs.existsSync(outputPath)) {
-			console.log('QR existant trouvé, utilisation du cache');
 			return res.status(200).json({
 				message: 'QR code existant',
-				qrPath: `/uploads/qrcodes/survey-${surveyId}.png`,
+				qrPath,
+				urls,
+				meta: {
+					explain,
+					type,
+					cacheKey,
+					format: 'svg',
+					mime: 'image/svg+xml',
+				},
 			});
 		}
-		if (force) console.log('Force regeneration requested, ignoring cache');
 
-		// -----------------------------
-		// Génération du QR code
-		// -----------------------------
-		console.log('Génération du nouveau QR...', 'targetUrl=', targetUrl);
-		const qrWidth = 300;
-		// Use high error correction so logos can be overlaid without breaking scannability
-		const qrOptions = { width: qrWidth, errorCorrectionLevel: 'H', margin: 1 };
-		let qrBuffer = await QRcode.toBuffer(targetUrl, qrOptions);
-		console.log(
-			'QR buffer generated (bytes):',
-			qrBuffer.length,
-			'options:',
-			qrOptions
-		);
+		cleanupOldQrFiles(outputDir, surveyId, filename);
 
-		// -----------------------------
-		// Ajouter un logo centré sur le QR si présent (./uploads/logo.png)
-		// -----------------------------
-		const defaultLogoPath = path.join(__dirname, '../uploads/logo.png');
-		if (fs.existsSync(defaultLogoPath)) {
-			try {
-				// redimensionner le logo pour occuper ~22% du QR
-				const logoSize = Math.floor(qrWidth * 0.18); // smaller logo to improve scannability
-				const logoRaw = await sharp(defaultLogoPath)
-					.resize(logoSize, logoSize, { fit: 'contain' })
-					.png()
-					.toBuffer();
-				console.log(
-					'Logo trouvé et redimensionné, buffer length:',
-					logoRaw.length
-				);
+		const qrSize = 320;
+		const qrOptions = {
+			type: 'svg',
+			width: qrSize,
+			errorCorrectionLevel: 'H',
+			margin: 1,
+			color: {
+				dark: '#000000',
+				light: '#ffffff',
+			},
+		};
+		const qrSvgMarkup = await QRcode.toString(targetUrl, qrOptions);
+		const qrSvgDataUri = `data:image/svg+xml;base64,${Buffer.from(
+			qrSvgMarkup,
+			'utf8',
+		).toString('base64')}`;
 
-				// Créer un fond blanc (léger padding) pour améliorer la visibilité du logo
-				const pad = Math.max(6, Math.floor(logoSize * 0.15));
-				const bgSize = logoSize + pad * 2;
-				const logoWithBg = await sharp({
-					create: {
-						width: bgSize,
-						height: bgSize,
-						channels: 4,
-						background: '#ffffff',
-					},
-				})
-					.composite([{ input: logoRaw, gravity: 'center' }])
-					.png()
-					.toBuffer();
-
-				// Ecrire un fichier de debug pour vérifier le rendu du logo seul
-				try {
-					const debugLogoPath = path.join(dir, `debug-logo-${surveyId}.png`);
-					await fs.promises.writeFile(debugLogoPath, logoWithBg);
-					console.log('Logo avec fond écrit pour debug :', debugLogoPath);
-				} catch (e) {
-					console.warn('Impossible d’ecrire le fichier debug-logo:', e.message);
-				}
-
-				// Composite logoWithBg au centre du QR
-				qrBuffer = await sharp(qrBuffer)
-					.composite([{ input: logoWithBg, gravity: 'center', blend: 'over' }])
-					.png()
-					.toBuffer();
-				console.log(
-					'Logo appliqué au QR depuis',
-					defaultLogoPath,
-					'; QR buffer length after composite:',
-					qrBuffer.length
-				);
-			} catch (e) {
-				console.warn('Impossible d’appliquer le logo au QR:', e.message);
-			}
-		} else {
-			console.log(
-				'Aucun logo trouvé à',
-				defaultLogoPath,
-				'- génération sans logo'
-			);
-		}
-
-		// -----------------------------
-		// Génération du titre SVG adaptatif (multi-lignes + ajustement taille)
-		// -----------------------------
-		// Helpers pour wrapper le texte
-		function wrapTextToLines(text, maxChars) {
-			const words = text.split(/\s+/);
-			const lines = [];
-			let current = '';
-			for (const w of words) {
-				if (!current) current = w;
-				else if ((current + ' ' + w).length <= maxChars) current += ' ' + w;
-				else {
-					lines.push(current);
-					current = w;
-				}
-			}
-			if (current) lines.push(current);
-			return lines;
-		}
-
-		const canvasWidth = 400;
+		const title = escapeXml(survey.theme || 'Sondage');
+		const canvasWidth = 440;
 		const padding = 20;
-		let fontSize = 28; // taille initiale
+		let fontSize = 28;
 		let lines = [];
 		let titleHeight = 0;
+
 		for (; fontSize >= 12; fontSize -= 2) {
-			const avgCharWidth = fontSize * 0.6; // approximation
+			const avgCharWidth = fontSize * 0.6;
 			const maxCharsPerLine = Math.floor(
-				(canvasWidth - padding * 2) / avgCharWidth
+				(canvasWidth - padding * 2) / avgCharWidth,
 			);
-			lines = wrapTextToLines(themeText, Math.max(10, maxCharsPerLine));
+			lines = wrapTextToLines(title, Math.max(10, maxCharsPerLine));
 			if (lines.length <= 3) {
-				titleHeight = lines.length * (fontSize + 6) + 20; // espace interne
+				titleHeight = lines.length * (fontSize + 6) + 20;
 				break;
 			}
 		}
-		// cap la hauteur si trop grande
-		titleHeight = Math.min(titleHeight, 120);
 
-		// construire le SVG dynamiquement
-		let svgLines = '';
+		titleHeight = Math.min(titleHeight || 60, 120);
 		const startY = 30;
-		for (let i = 0; i < lines.length; i++) {
-			const y = startY + i * (fontSize + 6);
-			svgLines += `<text x="${
-				canvasWidth / 2
-			}" y="${y}" font-size="${fontSize}" font-family="Arial" font-weight="bold" text-anchor="middle">${
-				lines[i]
-			}</text>`;
+		const qrX = Math.floor((canvasWidth - qrSize) / 2);
+		const qrY = titleHeight + 20;
+		const canvasHeight = qrY + qrSize + 20;
+
+		let logoMarkup = '';
+		const resolvedLogoPath = resolveLogoPath();
+		const logoDataUri = resolvedLogoPath ? readLogoDataUri(resolvedLogoPath) : null;
+		if (logoDataUri) {
+			const logoSize = Math.floor(qrSize * 0.18);
+			const pad = Math.max(6, Math.floor(logoSize * 0.15));
+			const bgSize = logoSize + pad * 2;
+			const bgX = Math.floor(qrX + qrSize / 2 - bgSize / 2);
+			const bgY = Math.floor(qrY + qrSize / 2 - bgSize / 2);
+			const logoX = bgX + pad;
+			const logoY = bgY + pad;
+			const radius = Math.max(4, Math.floor(bgSize * 0.12));
+			logoMarkup = `
+				<rect x="${bgX}" y="${bgY}" width="${bgSize}" height="${bgSize}" rx="${radius}" ry="${radius}" fill="#ffffff"/>
+				<image href="${logoDataUri}" x="${logoX}" y="${logoY}" width="${logoSize}" height="${logoSize}" preserveAspectRatio="xMidYMid meet"/>
+			`;
 		}
 
-		const underlineY = startY + lines.length * (fontSize + 6);
-		const titleSvg = `<svg width="${canvasWidth}" height="${titleHeight}">${svgLines}<text x="${
-			canvasWidth / 2
-		}" y="${underlineY}" font-size="${Math.max(
-			12,
-			Math.floor(fontSize / 1.2)
-		)}" font-family="Arial" text-anchor="middle">${'_'.repeat(
-			24
-		)}</text></svg>`;
-		const titleBuffer = Buffer.from(titleSvg);
+		const titleLinesMarkup = lines
+			.map((line, index) => {
+				const y = startY + index * (fontSize + 6);
+				return `<text x="${canvasWidth / 2}" y="${y}" font-size="${fontSize}" font-family="Arial" font-weight="700" text-anchor="middle" fill="#111827">${escapeXml(line)}</text>`;
+			})
+			.join('');
 
-		// -----------------------------
-		// Assemblage final avec sharp
-		// -----------------------------
-		const qrTop = titleHeight + 20;
-		const canvasHeight = qrTop + qrWidth + 20;
+		const finalSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}" viewBox="0 0 ${canvasWidth} ${canvasHeight}" role="img" aria-label="QR code du sondage ${escapeXml(survey.theme || 'Sondage')}">
+	<rect x="0" y="0" width="${canvasWidth}" height="${canvasHeight}" fill="#ffffff"/>
+	${titleLinesMarkup}
+	<rect x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" fill="#ffffff"/>
+	<image href="${qrSvgDataUri}" x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" preserveAspectRatio="xMidYMid meet" aria-hidden="true"/>
+	${logoMarkup}
+</svg>`;
 
-		await sharp({
-			create: {
-				width: canvasWidth,
-				height: canvasHeight,
-				channels: 4,
-				background: '#ffffff',
-			},
-		})
-			.composite([
-				{ input: titleBuffer, top: 0, left: 0 },
-				{
-					input: qrBuffer,
-					top: qrTop,
-					left: Math.floor((canvasWidth - qrWidth) / 2),
-				},
-			])
-			.png()
-			.toFile(outputPath);
+		fs.writeFileSync(outputPath, finalSvg, 'utf8');
 
-		console.log('QR généré avec succès :', outputPath);
-
-		// -----------------------------
-		// Réponse frontend
-		// -----------------------------
 		return res.status(200).json({
-			message: 'QR code généré avec succès',
-			qrPath: `/uploads/qrcodes/survey-${surveyId}.png`,
+			message: 'QR code genere avec succes',
+			qrPath,
+			urls,
+			meta: {
+				explain,
+				type,
+				cacheKey,
+				format: 'svg',
+				mime: 'image/svg+xml',
+			},
 		});
 	} catch (error) {
-		console.error('Erreur lors de la génération QR :', error);
+		console.error('Erreur lors de la generation QR :', error);
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 });

@@ -3,6 +3,9 @@ const http = require('http');
 const app = require('./app');
 const { Server } = require('socket.io');
 const chatHandlers = require('./sockets/chatHandlers');
+const supportHandlers = require('./sockets/supportHandlers');
+const flashSurveyHandlers = require('./sockets/flashSurveyHandlers');
+const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
 
 const normalizePort = (val) => {
 	const port = parseInt(val, 10);
@@ -22,6 +25,9 @@ const io = new Server(server, {
 app.set('io', io);
 
 chatHandlers(io);
+flashSurveyHandlers(io);
+surveyFeedHandlers(io);
+supportHandlers(io.of('/support'));
 
 io.on('connection', (socket) => {
 	console.log('Client Socket.IO connecté', socket.id);

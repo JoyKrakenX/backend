@@ -1,0 +1,14 @@
+/** @format */
+
+const express = require('express');
+
+const router = express.Router();
+
+const auth = require('../middlewares/auth');
+const surveyFlash2Ctrl = require('../controllers/surveyFlash_2');
+
+router.get('/:id/state', auth, surveyFlash2Ctrl.getState);
+router.get('/:id/detailed-results', auth, surveyFlash2Ctrl.getDetailedResults);
+router.post('/:id/answer', auth, surveyFlash2Ctrl.submitOpinion);
+
+module.exports = router;

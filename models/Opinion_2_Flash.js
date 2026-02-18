@@ -5,8 +5,8 @@ const mongoose = require('mongoose');
 const opinion2FlashSchema = new mongoose.Schema({
 	answer: {
 		type: String,
-		enum: ['reponse_1', 'reponse_2', 'reponse_3'],
 		required: true,
+		trim: true,
 	},
 
 	reason: { type: String, trim: true },

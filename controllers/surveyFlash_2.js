@@ -2,12 +2,17 @@
 
 const Survey_2 = require('../models/Survey_2');
 const Opinion2Flash = require('../models/Opinion_2_Flash');
-
-const ALLOWED_CHOICES = ['reponse_1', 'reponse_2', 'reponse_3'];
+const {
+	buildSurveyOptionPayload,
+	resolveSurveyOptions,
+	isChoiceAllowed,
+	buildCountsMapFromOpinions,
+	aggregateCountsByOptionKeys,
+	buildLegacyOptionFields,
+} = require('../utils/multipleSurveyOptions');
 
 const canManageSurvey = (survey, req) =>
-	req.userRole === 'admin' ||
-	String(survey.userId) === String(req.userId);
+	req.userRole === 'admin' || String(survey.userId) === String(req.userId);
 
 const formatOpinion = (opinion, userId) => {
 	const likeCount = (opinion.likes && opinion.likes.length) || 0;
@@ -30,18 +35,18 @@ const formatOpinion = (opinion, userId) => {
 	};
 };
 
-async function buildMultipleCounts(surveyId) {
-	const [reponse_1, reponse_2, reponse_3] = await Promise.all([
-		Opinion2Flash.countDocuments({ surveyId, answer: 'reponse_1' }),
-		Opinion2Flash.countDocuments({ surveyId, answer: 'reponse_2' }),
-		Opinion2Flash.countDocuments({ surveyId, answer: 'reponse_3' }),
-	]);
+const normalizeSurveyForPayload = (survey) => {
+	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
+	const optionPayload = buildSurveyOptionPayload(source);
 
 	return {
-		totalOpinions: reponse_1 + reponse_2 + reponse_3,
-		counts: { reponse_1, reponse_2, reponse_3 },
+		...source,
+		options: optionPayload.options,
+		optionKeys: optionPayload.optionKeys,
+		labels: optionPayload.labels,
+		...optionPayload.legacyFields,
 	};
-}
+};
 
 exports.getState = async (req, res) => {
 	try {
@@ -51,9 +56,7 @@ exports.getState = async (req, res) => {
 		}
 
 		if (survey.explain !== false) {
-			return res
-				.status(400)
-				.json({ message: "Ce sondage n'est pas un sondage Flash." });
+			return res.status(400).json({ message: "Ce sondage n'est pas un sondage Flash." });
 		}
 
 		const hasParticipated = Boolean(
@@ -67,10 +70,14 @@ exports.getState = async (req, res) => {
 
 		const canViewResults = hasParticipated || canManageSurvey(survey, req);
 		const canVote = !survey.isClosed && !hasParticipated;
+		const normalizedSurvey = normalizeSurveyForPayload(survey);
 
 		const payload = {
-			survey,
+			survey: normalizedSurvey,
 			type: 'multiple',
+			options: normalizedSurvey.options,
+			optionKeys: normalizedSurvey.optionKeys,
+			labels: normalizedSurvey.labels,
 			hasParticipated,
 			canVote,
 			canViewResults,
@@ -78,14 +85,13 @@ exports.getState = async (req, res) => {
 		};
 
 		if (survey.isClosed && !canViewResults) {
-			payload.message =
-				'Ce sondage est clôturé. Les résultats sont réservés aux votants.';
+			payload.message = 'Ce sondage est cloture. Les resultats sont reserves aux votants.';
 		}
 
-		res.status(200).json(payload);
+		return res.status(200).json(payload);
 	} catch (error) {
 		console.error('surveyFlash_2.getState error:', error);
-		res.status(500).json({ message: 'Erreur serveur' });
+		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
 
@@ -97,19 +103,18 @@ exports.submitOpinion = async (req, res) => {
 		}
 
 		if (survey.explain !== false) {
-			return res
-				.status(400)
-				.json({ message: "Ce sondage n'est pas un sondage Flash." });
+			return res.status(400).json({ message: "Ce sondage n'est pas un sondage Flash." });
 		}
 
 		if (survey.isClosed) {
 			return res.status(403).json({
-				message: 'Le sondage est clôturé, vous ne pouvez plus y répondre.',
+				message: 'Le sondage est cloture, vous ne pouvez plus y repondre.',
 			});
 		}
 
-		if (!ALLOWED_CHOICES.includes(req.body.choice)) {
-			return res.status(400).json({ message: 'Réponse invalide' });
+		const options = resolveSurveyOptions(survey);
+		if (!isChoiceAllowed(req.body.choice, options)) {
+			return res.status(400).json({ message: 'Reponse invalide' });
 		}
 
 		const already = await Opinion2Flash.findOne({
@@ -122,15 +127,14 @@ exports.submitOpinion = async (req, res) => {
 		if (already) {
 			return res.status(403).json({
 				message:
-					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
+					'Vous avez deja repondu a ce sondage, merci de patienter la publication des resultats.',
 			});
 		}
 
-		const reason =
-			typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+		const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
 
 		const opinion = new Opinion2Flash({
-			answer: req.body.choice,
+			answer: String(req.body.choice).trim(),
 			reason: reason || undefined,
 			surveyId: survey._id,
 			userId: req.userId,
@@ -141,7 +145,12 @@ exports.submitOpinion = async (req, res) => {
 
 		const io = req.app.get('io');
 		const room = `flash-multiple-${survey._id}`;
-		const countsPayload = await buildMultipleCounts(survey._id);
+		const normalizedSurvey = normalizeSurveyForPayload(survey);
+		const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+			Opinion2Flash,
+			survey._id,
+			normalizedSurvey.optionKeys,
+		);
 
 		if (reason) {
 			io.to(room).emit('flash:new-opinion', {
@@ -162,13 +171,16 @@ exports.submitOpinion = async (req, res) => {
 		io.to(room).emit('flash:counts', {
 			surveyId: String(survey._id),
 			type: 'multiple',
-			totalOpinions: countsPayload.totalOpinions,
-			counts: countsPayload.counts,
+			options: normalizedSurvey.options,
+			optionKeys: normalizedSurvey.optionKeys,
+			labels: normalizedSurvey.labels,
+			counts,
+			totalOpinions,
 			isClosed: Boolean(survey.isClosed),
 		});
 
-		res.status(201).json({
-			message: 'Opinion enregistrée !',
+		return res.status(201).json({
+			message: 'Opinion enregistree !',
 			hasParticipated: true,
 			canVote: false,
 		});
@@ -176,11 +188,11 @@ exports.submitOpinion = async (req, res) => {
 		if (error && error.code === 11000) {
 			return res.status(403).json({
 				message:
-					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
+					'Vous avez deja repondu a ce sondage, merci de patienter la publication des resultats.',
 			});
 		}
 		console.error('surveyFlash_2.submitOpinion error:', error);
-		res.status(500).json({ message: 'Erreur serveur' });
+		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
 
@@ -192,9 +204,7 @@ exports.getDetailedResults = async (req, res) => {
 		}
 
 		if (survey.explain !== false) {
-			return res
-				.status(400)
-				.json({ message: "Ce sondage n'est pas un sondage Flash." });
+			return res.status(400).json({ message: "Ce sondage n'est pas un sondage Flash." });
 		}
 
 		const hasParticipated = Boolean(
@@ -210,15 +220,15 @@ exports.getDetailedResults = async (req, res) => {
 		if (!canViewResults) {
 			if (survey.isClosed) {
 				return res.status(403).json({
-					message:
-						'Ce sondage est clôturé. Les résultats sont réservés aux votants.',
+					message: 'Ce sondage est cloture. Les resultats sont reserves aux votants.',
 				});
 			}
-			return res
-				.status(403)
-				.json({ message: 'Votez pour accéder aux résultats en temps réel.' });
+			return res.status(403).json({
+				message: 'Votez pour acceder aux resultats en temps reel.',
+			});
 		}
 
+		const normalizedSurvey = normalizeSurveyForPayload(survey);
 		const opinions = await Opinion2Flash.find({ surveyId: survey._id })
 			.sort({ createdAt: -1 })
 			.lean();
@@ -226,36 +236,28 @@ exports.getDetailedResults = async (req, res) => {
 		const enrichedOpinions = opinions.map((opinion) =>
 			formatOpinion(opinion, req.userId),
 		);
+		const counts = buildCountsMapFromOpinions(
+			enrichedOpinions,
+			normalizedSurvey.optionKeys,
+		);
 
-		const counts = {
-			reponse_1: 0,
-			reponse_2: 0,
-			reponse_3: 0,
-		};
-
-		enrichedOpinions.forEach((opinion) => {
-			if (counts[opinion.answer] !== undefined) {
-				counts[opinion.answer] += 1;
-			}
-		});
-
-		res.status(200).json({
-			survey,
+		return res.status(200).json({
+			survey: normalizedSurvey,
 			type: 'multiple',
 			isClosed: Boolean(survey.isClosed),
 			hasParticipated,
 			canVote: !survey.isClosed && !hasParticipated,
 			totalOpinions: enrichedOpinions.length,
-			labels: {
-				reponse_1: survey.reponse_1,
-				reponse_2: survey.reponse_2,
-				reponse_3: survey.reponse_3,
-			},
+			options: normalizedSurvey.options,
+			optionKeys: normalizedSurvey.optionKeys,
+			labels: normalizedSurvey.labels,
 			counts,
+			...buildLegacyOptionFields(normalizedSurvey.options),
 			opinions: enrichedOpinions,
 		});
 	} catch (error) {
 		console.error('surveyFlash_2.getDetailedResults error:', error);
-		res.status(500).json({ message: 'Erreur serveur' });
+		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
+

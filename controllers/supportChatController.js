@@ -7,12 +7,16 @@ const {
 	normalizeEmail,
 	isSupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
+const { isSupportBusinessHours } = require('../utils/supportBusinessHours');
 
 const sanitizeText = (value, max = 4000) =>
 	String(value || '')
 		.trim()
 		.replace(/[<>]/g, '')
 		.slice(0, max);
+
+const parseBoolean = (value) =>
+	value === true || value === 'true' || value === 1 || value === '1';
 
 const buildConversationRef = () => {
 	const year = new Date().getFullYear();
@@ -78,15 +82,26 @@ const buildConversationFilterForUser = (req, role) => {
 exports.bootstrapConversation = async (req, res) => {
 	try {
 		const conversationId = sanitizeText(req.body?.conversationId, 128);
+		const forceNewSession = parseBoolean(req.body?.forceNewSession);
 		const category = sanitizeText(req.body?.category || 'general', 64);
 		const channelPage = sanitizeText(req.body?.channelPage || 'contact', 32);
 		const locale = sanitizeText(req.body?.locale || 'fr', 8);
 		const initialMessage = sanitizeText(req.body?.initialMessage, 4000);
 		const guestName = sanitizeText(req.body?.guestName, 120);
 		const guestEmail = sanitizeText(req.body?.guestEmail, 180).toLowerCase();
+		const supportOpen = isSupportBusinessHours();
+
+		if (forceNewSession && !supportOpen) {
+			return res.status(403).json({
+				code: 'SUPPORT_CLOSED_HOURS',
+				supportOpen: false,
+				message:
+					'Le support est actuellement hors horaires ouvrables. Merci de reessayer pendant les heures d ouverture.',
+			});
+		}
 
 		let conversation = null;
-		if (conversationId) {
+		if (conversationId && !forceNewSession) {
 			conversation = await SupportConversation.findById(conversationId);
 		}
 
@@ -130,6 +145,7 @@ exports.bootstrapConversation = async (req, res) => {
 		return res.status(200).json({
 			conversation,
 			messages,
+			supportOpen,
 		});
 	} catch (error) {
 		console.error('supportChat.bootstrapConversation:', error);

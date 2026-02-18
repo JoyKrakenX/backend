@@ -7,6 +7,19 @@ const Opinion2Flash = require('../models/Opinion_2_Flash');
 const Survey_2 = require('../models/Survey_2');
 const { normalizeQuestion } = require('../utils/questionNormalizer');
 const {
+	extractIncomingOptions,
+	resolveSurveyOptions,
+	validateOptions,
+	normalizeValidatedOptions,
+	buildSurveyOptionPayload,
+	buildLegacyOptionFields,
+	buildLabelsMapFromOptions,
+	buildOptionKeys,
+	isChoiceAllowed,
+	buildCountsMapFromOpinions,
+	aggregateCountsByOptionKeys,
+} = require('../utils/multipleSurveyOptions');
+const {
 	broadcastSurveyNewPush,
 	broadcastSurveyClosedPush,
 } = require('../services/supportPushService');
@@ -14,60 +27,75 @@ const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
-	if (typeof value === 'string') {
-		return value.trim().toLowerCase() !== 'false';
-	}
-	if (typeof value === 'number') {
-		return value !== 0;
-	}
+	if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
+	if (typeof value === 'number') return value !== 0;
 	return true;
 };
 
-const toObjectId = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
+const toObjectId = (id) => new mongoose.Types.ObjectId(String(id));
 
 const getMultipleOpinionModel = (survey) =>
 	survey && survey.explain === false ? Opinion2Flash : Opinion_2;
 
-async function getMultipleCounts(surveyId, OpinionModel) {
-	const [reponse_1, reponse_2, reponse_3] = await Promise.all([
-		OpinionModel.countDocuments({ surveyId, answer: 'reponse_1' }),
-		OpinionModel.countDocuments({ surveyId, answer: 'reponse_2' }),
-		OpinionModel.countDocuments({ surveyId, answer: 'reponse_3' }),
-	]);
+const normalizeSurveyForResponse = (survey) => {
+	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
+	const optionPayload = buildSurveyOptionPayload(source);
 
 	return {
-		reponse_1,
-		reponse_2,
-		reponse_3,
-		totalOpinions: reponse_1 + reponse_2 + reponse_3,
+		...source,
+		options: optionPayload.options,
+		optionKeys: optionPayload.optionKeys,
+		labels: optionPayload.labels,
+		...optionPayload.legacyFields,
 	};
-}
+};
+
+const syncCanonicalOptionsOnDocument = (surveyDocument) => {
+	const options = resolveSurveyOptions(surveyDocument);
+	if (!options.length) return options;
+
+	surveyDocument.options = options;
+	Object.assign(surveyDocument, buildLegacyOptionFields(options));
+	return options;
+};
 
 exports.createSurvey = async (req, res) => {
 	try {
 		delete req.body._id;
-		const theme = (req.body.theme || '').trim();
+
+		const theme = String(req.body.theme || '').trim();
 		const realTheme =
 			'#' +
 			theme
 				.split(' ')
+				.filter(Boolean)
 				.map(
 					(word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
 				)
 				.join('');
+
+		const requestedOptions = extractIncomingOptions(req.body);
+		const optionsValidation = validateOptions(requestedOptions);
+		if (!optionsValidation.valid) {
+			return res.status(400).json({
+				code: optionsValidation.code,
+				message: optionsValidation.message,
+			});
+		}
+		const options = normalizeValidatedOptions(requestedOptions);
 
 		const survey = new Survey_2({
 			theme: realTheme,
 			contexte: req.body.contexte,
 			question: normalizeQuestion(req.body.question),
 			explain: parseExplainFlag(req.body.explain),
-			reponse_1: req.body.reponse_1,
-			reponse_2: req.body.reponse_2,
-			reponse_3: req.body.reponse_3 || 'Autre point de vue',
+			options,
+			...buildLegacyOptionFields(options),
 			userId: req.userId,
 		});
 
 		const savedSurvey = await survey.save();
+		const normalizedSurvey = normalizeSurveyForResponse(savedSurvey);
 
 		broadcastSurveyNewPush({
 			surveyId: savedSurvey._id,
@@ -90,37 +118,37 @@ exports.createSurvey = async (req, res) => {
 			endedAt: savedSurvey.endedAt,
 		});
 
-		res.status(200).json({
-			message: 'Survey saved !',
+		return res.status(200).json({
+			message: 'Survey saved!',
 			surveyId: savedSurvey._id,
 			explain: savedSurvey.explain,
+			options: normalizedSurvey.options,
 		});
 	} catch (error) {
 		if (error && error.code === 11000) {
-			return res
-				.status(400)
-				.json({ message: 'Un sondage avec ce thème existe déjà.' });
+			return res.status(400).json({ message: 'Un sondage avec ce theme existe deja.' });
 		}
 		console.error(error);
-		res.status(400).json({ error });
+		return res.status(400).json({ error });
 	}
 };
 
-exports.getOneSurvey = (req, res) => {
-	const id = req.params.id;
+exports.getOneSurvey = async (req, res) => {
+	try {
+		const id = req.params.id;
+		if (!mongoose.Types.ObjectId.isValid(id)) {
+			return res.status(400).json({ message: 'ID invalide' });
+		}
 
-	if (!mongoose.Types.ObjectId.isValid(id)) {
-		return res.status(400).json({ message: 'ID invalide' });
+		const survey = await Survey_2.findById(id).lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		return res.status(200).json(normalizeSurveyForResponse(survey));
+	} catch (error) {
+		return res.status(500).json({ error });
 	}
-
-	Survey_2.findById(id)
-		.then((survey) => {
-			if (!survey) {
-				return res.status(404).json({ message: 'Sondage introuvable' });
-			}
-			res.status(200).json(survey);
-		})
-		.catch((error) => res.status(500).json({ error }));
 };
 
 exports.submitOpinion = async (req, res) => {
@@ -134,15 +162,19 @@ exports.submitOpinion = async (req, res) => {
 
 		if (survey.explain === false) {
 			return res.status(400).json({
-				message:
-					'Ce sondage est en mode Flash. Utilisez les endpoints Flash dédiés.',
+				message: 'Ce sondage est en mode Flash. Utilisez les endpoints Flash dedies.',
 			});
 		}
 
 		if (survey.isClosed) {
 			return res.status(403).json({
-				message: 'Le sondage est clôturé, vous ne pouvez plus y répondre.',
+				message: 'Le sondage est cloture, vous ne pouvez plus y repondre.',
 			});
+		}
+
+		const options = resolveSurveyOptions(survey);
+		if (!isChoiceAllowed(req.body.choice, options)) {
+			return res.status(400).json({ message: 'Reponse invalide' });
 		}
 
 		const existingOpinion = await Opinion_2.findOne({
@@ -153,20 +185,16 @@ exports.submitOpinion = async (req, res) => {
 		if (existingOpinion) {
 			return res.status(403).json({
 				message:
-					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
+					'Vous avez deja repondu a ce sondage, merci de patienter la publication des resultats.',
 			});
 		}
 
-		if (!['reponse_1', 'reponse_2', 'reponse_3'].includes(req.body.choice)) {
-			return res.status(400).json({ message: 'Réponse invalide' });
-		}
-
-		if (!req.body.reason || req.body.reason.trim() === '') {
+		if (!req.body.reason || String(req.body.reason).trim() === '') {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 
 		const opinion = new Opinion_2({
-			answer: req.body.choice,
+			answer: String(req.body.choice).trim(),
 			reason: req.body.reason,
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
@@ -174,17 +202,13 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
-
-		res.status(201).json({ message: 'Opinion enregistrée !' });
-	} catch (err) {
-		if (err.code === 11000) {
-			return res
-				.status(403)
-				.json({ message: 'Vous avez déjà répondu à ce sondage.' });
+		return res.status(201).json({ message: 'Opinion enregistree !' });
+	} catch (error) {
+		if (error?.code === 11000) {
+			return res.status(403).json({ message: 'Vous avez deja repondu a ce sondage.' });
 		}
-		console.error('ERREUR dans submitOpinion:', err);
-		console.error('Stack trace:', err.stack);
-		res.status(500).json({ error: err.message });
+		console.error('ERREUR dans submitOpinion:', error);
+		return res.status(500).json({ error: error.message });
 	}
 };
 
@@ -199,11 +223,10 @@ exports.getFlashStats = async (req, res) => {
 
 		const OpinionModel = getMultipleOpinionModel(survey);
 		const totalOpinions = await OpinionModel.countDocuments({ surveyId });
-
-		res.status(200).json({ totalOpinions });
+		return res.status(200).json({ totalOpinions });
 	} catch (error) {
 		console.error(error);
-		res.status(500).json({ message: 'Erreur stats sondage multiple' });
+		return res.status(500).json({ message: 'Erreur stats sondage multiple' });
 	}
 };
 
@@ -215,17 +238,17 @@ exports.closeSurvey = async (req, res) => {
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		if (survey.userId?.toString() !== req.userId?.toString()) {
+		if (String(survey.userId) !== String(req.userId)) {
 			return res.status(403).json({ message: 'Non autorise' });
 		}
 
 		if (survey.isClosed) {
-			return res.status(400).json({ message: 'Ce sondage est déjà clôturé.' });
+			return res.status(400).json({ message: 'Ce sondage est deja cloture.' });
 		}
 
+		const options = syncCanonicalOptionsOnDocument(survey);
 		survey.isClosed = true;
 		survey.endedAt = new Date();
-
 		await survey.save();
 
 		const OpinionModel = getMultipleOpinionModel(survey);
@@ -245,17 +268,22 @@ exports.closeSurvey = async (req, res) => {
 		if (survey.explain === false) {
 			const io = req.app.get('io');
 			const room = `flash-multiple-${survey._id}`;
-			const counts = await getMultipleCounts(survey._id, Opinion2Flash);
+			const optionKeys = buildOptionKeys(options);
+			const labels = buildLabelsMapFromOptions(options);
+			const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+				Opinion2Flash,
+				survey._id,
+				optionKeys,
+			);
 
 			io.to(room).emit('flash:counts', {
 				surveyId: String(survey._id),
 				type: 'multiple',
-				totalOpinions: counts.totalOpinions,
-				counts: {
-					reponse_1: counts.reponse_1,
-					reponse_2: counts.reponse_2,
-					reponse_3: counts.reponse_3,
-				},
+				options,
+				optionKeys,
+				labels,
+				counts,
+				totalOpinions,
 				isClosed: true,
 			});
 
@@ -277,9 +305,10 @@ exports.closeSurvey = async (req, res) => {
 			endedAt: survey.endedAt,
 		});
 
-		res.status(200).json({ message: 'Sondage clôturé avec succès.' });
+		return res.status(200).json({ message: 'Sondage cloture avec succes.' });
 	} catch (error) {
-		res.status(500).json({ message: 'Erreur serveur' });
+		console.error(error);
+		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
 
@@ -298,52 +327,45 @@ exports.getDetailedStats = async (req, res) => {
 
 		if (!survey.isClosed) {
 			return res.status(403).json({
-				message: "Le sondage n'est pas encore clôturé. Résultats indisponibles",
+				message: "Le sondage n'est pas encore cloture. Resultats indisponibles",
 			});
 		}
 
+		const optionPayload = buildSurveyOptionPayload(survey);
 		const OpinionModel = getMultipleOpinionModel(survey);
 		const opinions = await OpinionModel.find({ surveyId }).lean();
+		const counts = buildCountsMapFromOpinions(opinions, optionPayload.optionKeys);
 
-		const counts = {
-			reponse_1: 0,
-			reponse_2: 0,
-			reponse_3: 0,
-		};
-
-		const enrichedOpinions = opinions.map((op) => {
-			if (counts[op.answer] !== undefined) counts[op.answer] += 1;
-
-			const likeCount = (op.likes && op.likes.length) || 0;
-			const dislikeCount = (op.dislikes && op.dislikes.length) || 0;
-
+		const enrichedOpinions = opinions.map((opinion) => {
+			const likeCount = (opinion.likes && opinion.likes.length) || 0;
+			const dislikeCount = (opinion.dislikes && opinion.dislikes.length) || 0;
 			const userLiked = req.userId
-				? (op.likes || []).some((id) => id.toString() === String(req.userId))
+				? (opinion.likes || []).some((id) => String(id) === String(req.userId))
+				: false;
+			const userDisliked = req.userId
+				? (opinion.dislikes || []).some((id) => String(id) === String(req.userId))
 				: false;
 
-			const userDisliked = req.userId
-				? (op.dislikes || []).some((id) => id.toString() === String(req.userId))
-				: false;
 			return {
-				...op,
+				...opinion,
 				likeCount,
 				dislikeCount,
 				userLiked,
 				userDisliked,
 			};
 		});
-		res.status(200).json({
+
+		return res.status(200).json({
 			totalOpinions: opinions.length,
-			labels: {
-				reponse_1: survey.reponse_1,
-				reponse_2: survey.reponse_2,
-				reponse_3: survey.reponse_3,
-			},
+			options: optionPayload.options,
+			optionKeys: optionPayload.optionKeys,
+			labels: optionPayload.labels,
 			counts,
+			...optionPayload.legacyFields,
 			opinions: enrichedOpinions,
 		});
-	} catch (err) {
-		console.log(err);
-		res.status(500).json({ message: 'Erreur serveur' });
+	} catch (error) {
+		console.error(error);
+		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };

@@ -13,6 +13,7 @@ const {
 	normalizeEmail,
 	isSupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
+const { isSupportBusinessHours } = require('../utils/supportBusinessHours');
 
 const categoryWeight = (category) => {
 	switch (String(category || '').toLowerCase()) {
@@ -36,36 +37,6 @@ const computePriorityScore = (conversation) => {
 		Math.floor((Date.now() - new Date(openedAt).getTime()) / 60000),
 	);
 	return categoryWeight(conversation.category) + waitingMinutes;
-};
-
-const toTimezoneParts = (timeZone) => {
-	const formatter = new Intl.DateTimeFormat('en-US', {
-		timeZone,
-		hour12: false,
-		weekday: 'short',
-		hour: '2-digit',
-	});
-	const parts = formatter.formatToParts(new Date());
-	const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-	const weekdayMap = {
-		Sun: 0,
-		Mon: 1,
-		Tue: 2,
-		Wed: 3,
-		Thu: 4,
-		Fri: 5,
-		Sat: 6,
-	};
-	return {
-		day: weekdayMap[partMap.weekday] ?? 0,
-		hour: Number(partMap.hour || 0),
-	};
-};
-
-const isSupportBusinessHours = () => {
-	const tz = process.env.SUPPORT_TIMEZONE || 'Africa/Porto-Novo';
-	const { day, hour } = toTimezoneParts(tz);
-	return day >= 1 && day <= 5 && hour >= 9 && hour < 18;
 };
 
 module.exports = (supportNamespace) => {
@@ -397,6 +368,11 @@ module.exports = (supportNamespace) => {
 				agentState.lastAssignedAt = Date.now();
 
 				await emitConversationState(conversation._id);
+				supportNamespace.to(String(conversation._id)).emit('support:assigned', {
+					conversationId: String(conversation._id),
+					agentId: String(socket.user.id),
+				});
+				await emitQueueUpdate(conversation, 'assigned');
 			} catch (error) {
 				console.error('support:claimConversation error:', error);
 				socket.emit('support:error', { message: 'Impossible de prendre ce chat.' });
@@ -408,6 +384,9 @@ module.exports = (supportNamespace) => {
 				const conversationId =
 					String(payload.conversationId || socket.data.conversationId || '').trim();
 				const content = String(payload.content || '').trim();
+				const senderContext = String(payload.senderContext || '')
+					.trim()
+					.toLowerCase();
 				const clientMessageId = String(payload.clientMessageId || '')
 					.trim()
 					.slice(0, 120);
@@ -425,7 +404,18 @@ module.exports = (supportNamespace) => {
 					});
 				}
 
-				const senderRole = isAllowlistedAgent(socket.user) ? 'agent' : 'client';
+				const allowlistedAgent = isAllowlistedAgent(socket.user);
+				let senderRole = allowlistedAgent ? 'agent' : 'client';
+				if (senderContext === 'client') {
+					senderRole = 'client';
+				} else if (senderContext === 'agent') {
+					if (!allowlistedAgent) {
+						return socket.emit('support:error', {
+							message: "Acces reserve a l administrateur support autorise.",
+						});
+					}
+					senderRole = 'agent';
+				}
 				const senderUserId = socket.user.id || null;
 
 				const message = await SupportMessage.create({
@@ -529,6 +519,7 @@ module.exports = (supportNamespace) => {
 					conversationId: String(conversationId),
 					closedAt: conversation.closedAt,
 					closedByRole: isAgent ? 'agent' : 'client',
+					supportOpen: isSupportBusinessHours(),
 					message: 'Ce chat a ete cloture par l admin.',
 				});
 			} catch (error) {

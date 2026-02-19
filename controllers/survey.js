@@ -5,7 +5,12 @@ const mongoose = require('mongoose');
 const Survey = require('../models/Survey');
 const Opinion = require('../models/Opinion');
 const OpinionFlash = require('../models/Opinion_Flash');
+const User = require('../models/User');
 const { normalizeQuestion } = require('../utils/questionNormalizer');
+const {
+	buildAdminProfilesByUserId,
+	anonymizeOpinionsForSurvey,
+} = require('../utils/commentAnonymizer');
 const {
 	broadcastSurveyNewPush,
 	broadcastSurveyClosedPush,
@@ -25,6 +30,9 @@ const parseExplainFlag = (value) => {
 
 const getBinaryOpinionModel = (survey) =>
 	survey && survey.explain === false ? OpinionFlash : Opinion;
+
+const canManageSurvey = (survey, req) =>
+	req.userRole === 'admin' || String(survey?.userId) === String(req.userId);
 
 const toObjectId = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
 
@@ -170,6 +178,21 @@ exports.submitOpinion = async (req, res) => {
 
 		await opinion.save();
 
+		const totalOpinions = await Opinion.countDocuments({ surveyId: survey._id });
+
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'vote',
+			surveyId: survey._id,
+			type: 'binary',
+			explain: survey.explain,
+			isClosed: Boolean(survey.isClosed),
+			ownerUserId: survey.userId,
+			createdAt: survey.createdAt,
+			endedAt: survey.endedAt,
+			totalOpinions,
+			occurredAt: new Date(),
+		});
+
 		res.status(201).json({ message: 'Opinion enregistrée !' });
 	} catch (err) {
 		console.error('ERREUR dans submitOpinion:', err);
@@ -200,7 +223,7 @@ exports.getFlashStats = async (req, res) => {
 exports.getDetailedStats = async (req, res) => {
 	try {
 		const surveyId = req.params.id;
-		const survey = await Survey.findById(surveyId).select('explain').lean();
+		const survey = await Survey.findById(surveyId).select('explain userId').lean();
 
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
@@ -208,8 +231,23 @@ exports.getDetailedStats = async (req, res) => {
 
 		const OpinionModel = getBinaryOpinionModel(survey);
 		const results = await OpinionModel.find({ surveyId }).lean();
+		const allowAdminFilters = canManageSurvey(survey, req);
+		let adminProfilesByUserId = null;
 
-		const enriched = results.map((op) => {
+		if (allowAdminFilters) {
+			const opinionUserIds = [
+				...new Set(results.map((opinion) => String(opinion?.userId || '')).filter(Boolean)),
+			];
+			const users =
+				opinionUserIds.length > 0 ?
+					await User.find({ _id: { $in: opinionUserIds } })
+						.select('birthdate gender')
+						.lean()
+				:	[];
+			adminProfilesByUserId = buildAdminProfilesByUserId(users);
+		}
+
+		const enrichedRaw = results.map((op) => {
 			const likeCount = (op.likes && op.likes.length) || 0;
 			const dislikeCount = (op.dislikes && op.dislikes.length) || 0;
 
@@ -229,6 +267,12 @@ exports.getDetailedStats = async (req, res) => {
 				userDisliked,
 			};
 		});
+		const enriched = anonymizeOpinionsForSurvey(enrichedRaw, surveyId, {
+			includeAdminProfile: allowAdminFilters,
+			includeVoterKey: allowAdminFilters,
+			adminProfilesByUserId,
+			requesterUserId: req.userId,
+		});
 
 		const yesCount = enriched.filter((op) => op.answer === true).length;
 		const noCount = enriched.length - yesCount;
@@ -237,6 +281,10 @@ exports.getDetailedStats = async (req, res) => {
 			totalOpinions: enriched.length,
 			yesCount,
 			noCount,
+			meta: {
+				demographicFiltersAvailable: allowAdminFilters,
+				demographicFilterMode: 'age_gender',
+			},
 			opinions: enriched,
 		});
 	} catch (err) {
@@ -280,10 +328,13 @@ exports.closeSurvey = async (req, res) => {
 			console.error('push survey.closed binary failed:', error?.message || error),
 		);
 
+		let finalTotalOpinions = null;
+
 		if (survey.explain === false) {
 			const io = req.app.get('io');
 			const room = `flash-binary-${survey._id}`;
 			const counts = await getBinaryCounts(survey._id, OpinionFlash);
+			finalTotalOpinions = counts.totalOpinions;
 
 			io.to(room).emit('flash:counts', {
 				surveyId: String(survey._id),
@@ -298,6 +349,8 @@ exports.closeSurvey = async (req, res) => {
 				type: 'binary',
 				endedAt: survey.endedAt,
 			});
+		} else {
+			finalTotalOpinions = await Opinion.countDocuments({ surveyId: survey._id });
 		}
 
 		emitSurveyFeedUpdate(req.app.get('io'), {
@@ -309,6 +362,7 @@ exports.closeSurvey = async (req, res) => {
 			ownerUserId: survey.userId,
 			createdAt: survey.createdAt,
 			endedAt: survey.endedAt,
+			totalOpinions: finalTotalOpinions,
 		});
 
 		res.status(200).json({ message: 'Sondage clôturé avec succès' });

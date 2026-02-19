@@ -5,7 +5,12 @@ const mongoose = require('mongoose');
 const Opinion_2 = require('../models/Opinion_2');
 const Opinion2Flash = require('../models/Opinion_2_Flash');
 const Survey_2 = require('../models/Survey_2');
+const User = require('../models/User');
 const { normalizeQuestion } = require('../utils/questionNormalizer');
+const {
+	buildAdminProfilesByUserId,
+	anonymizeOpinionsForSurvey,
+} = require('../utils/commentAnonymizer');
 const {
 	extractIncomingOptions,
 	resolveSurveyOptions,
@@ -36,6 +41,9 @@ const toObjectId = (id) => new mongoose.Types.ObjectId(String(id));
 
 const getMultipleOpinionModel = (survey) =>
 	survey && survey.explain === false ? Opinion2Flash : Opinion_2;
+
+const canManageSurvey = (survey, req) =>
+	req.userRole === 'admin' || String(survey?.userId) === String(req.userId);
 
 const normalizeSurveyForResponse = (survey) => {
 	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
@@ -202,6 +210,21 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
+
+		const totalOpinions = await Opinion_2.countDocuments({ surveyId: survey._id });
+
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'vote',
+			surveyId: survey._id,
+			type: 'multiple',
+			explain: survey.explain,
+			isClosed: Boolean(survey.isClosed),
+			ownerUserId: survey.userId,
+			createdAt: survey.createdAt,
+			endedAt: survey.endedAt,
+			totalOpinions,
+			occurredAt: new Date(),
+		});
 		return res.status(201).json({ message: 'Opinion enregistree !' });
 	} catch (error) {
 		if (error?.code === 11000) {
@@ -265,6 +288,8 @@ exports.closeSurvey = async (req, res) => {
 			console.error('push survey.closed multiple failed:', error?.message || error),
 		);
 
+		let finalTotalOpinions = null;
+
 		if (survey.explain === false) {
 			const io = req.app.get('io');
 			const room = `flash-multiple-${survey._id}`;
@@ -275,6 +300,7 @@ exports.closeSurvey = async (req, res) => {
 				survey._id,
 				optionKeys,
 			);
+			finalTotalOpinions = totalOpinions;
 
 			io.to(room).emit('flash:counts', {
 				surveyId: String(survey._id),
@@ -292,6 +318,8 @@ exports.closeSurvey = async (req, res) => {
 				type: 'multiple',
 				endedAt: survey.endedAt,
 			});
+		} else {
+			finalTotalOpinions = await Opinion_2.countDocuments({ surveyId: survey._id });
 		}
 
 		emitSurveyFeedUpdate(req.app.get('io'), {
@@ -303,6 +331,7 @@ exports.closeSurvey = async (req, res) => {
 			ownerUserId: survey.userId,
 			createdAt: survey.createdAt,
 			endedAt: survey.endedAt,
+			totalOpinions: finalTotalOpinions,
 		});
 
 		return res.status(200).json({ message: 'Sondage cloture avec succes.' });
@@ -335,8 +364,23 @@ exports.getDetailedStats = async (req, res) => {
 		const OpinionModel = getMultipleOpinionModel(survey);
 		const opinions = await OpinionModel.find({ surveyId }).lean();
 		const counts = buildCountsMapFromOpinions(opinions, optionPayload.optionKeys);
+		const allowAdminFilters = canManageSurvey(survey, req);
+		let adminProfilesByUserId = null;
 
-		const enrichedOpinions = opinions.map((opinion) => {
+		if (allowAdminFilters) {
+			const opinionUserIds = [
+				...new Set(opinions.map((opinion) => String(opinion?.userId || '')).filter(Boolean)),
+			];
+			const users =
+				opinionUserIds.length > 0 ?
+					await User.find({ _id: { $in: opinionUserIds } })
+						.select('birthdate gender')
+						.lean()
+				:	[];
+			adminProfilesByUserId = buildAdminProfilesByUserId(users);
+		}
+
+		const enrichedRawOpinions = opinions.map((opinion) => {
 			const likeCount = (opinion.likes && opinion.likes.length) || 0;
 			const dislikeCount = (opinion.dislikes && opinion.dislikes.length) || 0;
 			const userLiked = req.userId
@@ -354,6 +398,12 @@ exports.getDetailedStats = async (req, res) => {
 				userDisliked,
 			};
 		});
+		const enrichedOpinions = anonymizeOpinionsForSurvey(enrichedRawOpinions, surveyId, {
+			includeAdminProfile: allowAdminFilters,
+			includeVoterKey: allowAdminFilters,
+			adminProfilesByUserId,
+			requesterUserId: req.userId,
+		});
 
 		return res.status(200).json({
 			totalOpinions: opinions.length,
@@ -361,6 +411,10 @@ exports.getDetailedStats = async (req, res) => {
 			optionKeys: optionPayload.optionKeys,
 			labels: optionPayload.labels,
 			counts,
+			meta: {
+				demographicFiltersAvailable: allowAdminFilters,
+				demographicFilterMode: 'age_gender',
+			},
 			...optionPayload.legacyFields,
 			opinions: enrichedOpinions,
 		});

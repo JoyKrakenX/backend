@@ -1,6 +1,8 @@
 /** @format */
 
 const ChatMessage = require('../models/ChatMessage');
+const Survey = require('../models/Survey');
+const Survey_2 = require('../models/Survey_2');
 
 module.exports = (io) => {
 	const roomPresence = new Map();
@@ -72,6 +74,11 @@ module.exports = (io) => {
 			isLastSocketForUser,
 		};
 	};
+
+	const resolveSurveyModelFromType = (type) =>
+		type === 'multiple' ? Survey_2 : Survey;
+	const resolveSurveyModelFromName = (surveyModelName) =>
+		surveyModelName === 'Survey_2' ? Survey_2 : Survey;
 
 	io.on('connection', (socket) => {
 		console.log('Utilisateur connecté au chat:', socket.id);
@@ -150,6 +157,23 @@ module.exports = (io) => {
 				if (!message || message.trim().length === 0) {
 					return socket.emit('error', {
 						message: 'Le message ne peut pas être vide',
+					});
+				}
+
+				const surveyModel = resolveSurveyModelFromType(type);
+				const survey = await surveyModel
+					.findById(surveyId)
+					.select('isClosed')
+					.lean();
+				if (!survey) {
+					return socket.emit('error', {
+						message: 'Sondage introuvable',
+					});
+				}
+				if (survey.isClosed) {
+					return socket.emit('error', {
+						message:
+							'Le sondage est clôturé. Vous ne pouvez plus envoyer de messages.',
 					});
 				}
 
@@ -235,6 +259,23 @@ module.exports = (io) => {
 			try {
 				const chatMessage = await ChatMessage.findById(messageId);
 				if (!chatMessage) return;
+
+				const surveyModel = resolveSurveyModelFromName(chatMessage.surveyModel);
+				const survey = await surveyModel
+					.findById(chatMessage.surveyId)
+					.select('isClosed')
+					.lean();
+				if (!survey) {
+					socket.emit('error', { message: 'Sondage introuvable' });
+					return;
+				}
+				if (survey.isClosed) {
+					socket.emit('error', {
+						message:
+							'Le sondage est clôturé. Les réactions sur le chat sont désactivées.',
+					});
+					return;
+				}
 
 				const liked = chatMessage.likes.some((id) => id.toString() === userId);
 				const disliked = chatMessage.dislikes.some(

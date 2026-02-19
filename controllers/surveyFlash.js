@@ -2,10 +2,31 @@
 
 const Survey = require('../models/Survey');
 const OpinionFlash = require('../models/Opinion_Flash');
+const User = require('../models/User');
+const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
+const {
+	buildSurveyAlias,
+	buildAdminProfilesByUserId,
+	anonymizeOpinionsForSurvey,
+} = require('../utils/commentAnonymizer');
 
 const canManageSurvey = (survey, req) =>
 	req.userRole === 'admin' ||
 	String(survey.userId) === String(req.userId);
+
+const sanitizeSurveyForClient = (survey) => {
+	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
+	return {
+		_id: source?._id,
+		theme: source?.theme,
+		question: source?.question,
+		contexte: source?.contexte,
+		explain: source?.explain,
+		isClosed: Boolean(source?.isClosed),
+		createdAt: source?.createdAt,
+		endedAt: source?.endedAt || null,
+	};
+};
 
 const formatOpinion = (opinion, userId) => {
 	const likeCount = (opinion.likes && opinion.likes.length) || 0;
@@ -66,7 +87,7 @@ exports.getState = async (req, res) => {
 		const canVote = !survey.isClosed && !hasParticipated;
 
 		const payload = {
-			survey,
+			survey: sanitizeSurveyForClient(survey),
 			type: 'binary',
 			hasParticipated,
 			canVote,
@@ -146,8 +167,7 @@ exports.submitOpinion = async (req, res) => {
 				answer: opinion.answer,
 				reason: opinion.reason || '',
 				surveyId: String(opinion.surveyId),
-				userId: String(opinion.userId),
-				userPseudo: opinion.userPseudo,
+				userPseudo: buildSurveyAlias(survey._id, opinion.userId),
 				createdAt: opinion.createdAt,
 				likeCount: 0,
 				dislikeCount: 0,
@@ -162,6 +182,19 @@ exports.submitOpinion = async (req, res) => {
 			totalOpinions: countsPayload.totalOpinions,
 			counts: countsPayload.counts,
 			isClosed: Boolean(survey.isClosed),
+		});
+
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'vote',
+			surveyId: survey._id,
+			type: 'binary',
+			explain: survey.explain,
+			isClosed: Boolean(survey.isClosed),
+			ownerUserId: survey.userId,
+			createdAt: survey.createdAt,
+			endedAt: survey.endedAt,
+			totalOpinions: countsPayload.totalOpinions,
+			occurredAt: new Date(),
 		});
 
 		res.status(201).json({
@@ -203,7 +236,8 @@ exports.getDetailedResults = async (req, res) => {
 				.lean(),
 		);
 
-		const canViewResults = hasParticipated || canManageSurvey(survey, req);
+		const allowAdminFilters = canManageSurvey(survey, req);
+		const canViewResults = hasParticipated || allowAdminFilters;
 		if (!canViewResults) {
 			if (survey.isClosed) {
 				return res.status(403).json({
@@ -219,22 +253,50 @@ exports.getDetailedResults = async (req, res) => {
 		const opinions = await OpinionFlash.find({ surveyId: survey._id })
 			.sort({ createdAt: -1 })
 			.lean();
+		let adminProfilesByUserId = null;
 
-		const enrichedOpinions = opinions.map((opinion) =>
+		if (allowAdminFilters) {
+			const opinionUserIds = [
+				...new Set(opinions.map((opinion) => String(opinion?.userId || '')).filter(Boolean)),
+			];
+			const users =
+				opinionUserIds.length > 0 ?
+					await User.find({ _id: { $in: opinionUserIds } })
+						.select('birthdate gender')
+						.lean()
+				:	[];
+			adminProfilesByUserId = buildAdminProfilesByUserId(users);
+		}
+
+		const enrichedRawOpinions = opinions.map((opinion) =>
 			formatOpinion(opinion, req.userId),
+		);
+		const enrichedOpinions = anonymizeOpinionsForSurvey(
+			enrichedRawOpinions,
+			survey._id,
+			{
+				includeAdminProfile: allowAdminFilters,
+				includeVoterKey: allowAdminFilters,
+				adminProfilesByUserId,
+				requesterUserId: req.userId,
+			},
 		);
 
 		const yes = enrichedOpinions.filter((op) => op.answer === true).length;
 		const no = enrichedOpinions.length - yes;
 
 		res.status(200).json({
-			survey,
+			survey: sanitizeSurveyForClient(survey),
 			type: 'binary',
 			isClosed: Boolean(survey.isClosed),
 			hasParticipated,
 			canVote: !survey.isClosed && !hasParticipated,
 			totalOpinions: enrichedOpinions.length,
 			counts: { yes, no },
+			meta: {
+				demographicFiltersAvailable: allowAdminFilters,
+				demographicFilterMode: 'age_gender',
+			},
 			opinions: enrichedOpinions,
 		});
 	} catch (error) {

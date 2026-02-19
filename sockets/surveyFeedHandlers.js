@@ -42,10 +42,18 @@ const extractUserIdFromSocket = (socket) => {
 };
 
 const buildSurveyFeedPayload = (payload = {}) => {
-	const normalizedAction = payload.action === 'closed' ? 'closed' : 'created';
+	const normalizedAction =
+		payload.action === 'closed' ? 'closed'
+		: payload.action === 'vote' ? 'vote'
+		: 'created';
 	const normalizedType = payload.type === 'multiple' ? 'multiple' : 'binary';
 	const surveyId = String(payload.surveyId || '').trim();
 	const ownerUserId = String(payload.ownerUserId || '').trim();
+	const rawTotalOpinions = Number(payload.totalOpinions);
+	const totalOpinions =
+		Number.isFinite(rawTotalOpinions) && rawTotalOpinions >= 0 ?
+			Math.trunc(rawTotalOpinions)
+		:	null;
 
 	return {
 		eventId: String(payload.eventId || createEventId()),
@@ -58,6 +66,7 @@ const buildSurveyFeedPayload = (payload = {}) => {
 		createdAt: toIsoOrNull(payload.createdAt),
 		endedAt: toIsoOrNull(payload.endedAt),
 		occurredAt: toIsoOrNull(payload.occurredAt) || new Date().toISOString(),
+		totalOpinions,
 	};
 };
 

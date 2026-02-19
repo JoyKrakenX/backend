@@ -25,15 +25,6 @@ exports.getChatMessages = async (req, res, next) => {
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		// Vérifier si le sondage est clôturé (pour le chat)
-		if (survey.isClosed) {
-			return res.status(200).json({
-				messages: [],
-				surveyClosed: true,
-				message: 'Le sondage est clôturé. Le chat est archivé.',
-			});
-		}
-
 		// Pagination
 		const pageNumber = parseInt(page) || 1;
 		const limitNumber = parseInt(limit) || 50;
@@ -99,6 +90,11 @@ exports.getChatMessages = async (req, res, next) => {
 		});
 		res.status(200).json({
 			messages: enrichedMessages,
+			surveyClosed: Boolean(survey.isClosed),
+			message:
+				survey.isClosed ?
+					'Le sondage est clôturé. Le chat est archivé.'
+				:	null,
 			pagination: {
 				currentPage: pageNumber, // <-- utiliser pageNumber
 				totalPages: Math.ceil(totalMessages / limitNumber), // <-- utiliser limitNumber
@@ -268,6 +264,22 @@ exports.toggleMessageLike = async (req, res, next) => {
 		const chatMessage = await ChatMessage.findById(messageId);
 		if (!chatMessage) {
 			return res.status(404).json({ message: 'Message introuvable' });
+		}
+
+		const surveyModel =
+			chatMessage.surveyModel === 'Survey_2' ? Survey_2 : Survey;
+		const survey = await surveyModel
+			.findById(chatMessage.surveyId)
+			.select('isClosed')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+		if (survey.isClosed) {
+			return res.status(403).json({
+				message:
+					'Le sondage est clôturé. Les réactions sur le chat sont désactivées.',
+			});
 		}
 
 		const userId = req.userId.toString();

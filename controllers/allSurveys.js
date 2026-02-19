@@ -10,6 +10,28 @@ const Opinion_2_Flash = require('../models/Opinion_2_Flash');
 const settledValueOr = (result, fallback) =>
 	result && result.status === 'fulfilled' ? result.value : fallback;
 
+const toSurveyIds = (surveys) =>
+	Array.isArray(surveys) ? surveys.map((survey) => survey?._id).filter(Boolean) : [];
+
+const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) => {
+	if (!surveyIds.length) return new Map();
+	const rows = await OpinionModel.aggregate([
+		{
+			$match: {
+				surveyId: { $in: surveyIds },
+			},
+		},
+		{
+			$group: {
+				_id: '$surveyId',
+				count: { $sum: 1 },
+			},
+		},
+	]);
+
+	return new Map(rows.map((row) => [String(row._id), Number(row.count) || 0]));
+};
+
 exports.getAllSurveys = async (req, res, next) => {
 	try {
 		const userId = req.userId || null;
@@ -38,6 +60,32 @@ exports.getAllSurveys = async (req, res, next) => {
 			}
 		});
 
+		const binaryClassic = surveysBinary.filter((survey) => survey.explain !== false);
+		const binaryFlash = surveysBinary.filter((survey) => survey.explain === false);
+		const multipleClassic = surveysMultiple.filter((survey) => survey.explain !== false);
+		const multipleFlash = surveysMultiple.filter((survey) => survey.explain === false);
+
+		const voteSettled = await Promise.allSettled([
+			countOpinionsBySurvey(Opinion, toSurveyIds(binaryClassic)),
+			countOpinionsBySurvey(Opinion_Flash, toSurveyIds(binaryFlash)),
+			countOpinionsBySurvey(Opinion_2, toSurveyIds(multipleClassic)),
+			countOpinionsBySurvey(Opinion_2_Flash, toSurveyIds(multipleFlash)),
+		]);
+
+		const binaryClassicCounts = settledValueOr(voteSettled[0], new Map());
+		const binaryFlashCounts = settledValueOr(voteSettled[1], new Map());
+		const multipleClassicCounts = settledValueOr(voteSettled[2], new Map());
+		const multipleFlashCounts = settledValueOr(voteSettled[3], new Map());
+
+		voteSettled.forEach((entry, index) => {
+			if (entry.status === 'rejected') {
+				console.warn(
+					`allSurveys votes partial failure [${index}]`,
+					entry.reason?.message || entry.reason || 'unknown',
+				);
+			}
+		});
+
 		const binaryParticipationSet = new Set(
 			(binaryParticipations || []).map((id) => String(id)),
 		);
@@ -54,6 +102,14 @@ exports.getAllSurveys = async (req, res, next) => {
 		const formattedBinary = surveysBinary.map((s) => ({
 			...s,
 			type: 'binary',
+			totalVotes:
+				s.explain === false ?
+					binaryFlashCounts.get(String(s._id)) || 0
+				:	binaryClassicCounts.get(String(s._id)) || 0,
+			opinionsCount:
+				s.explain === false ?
+					binaryFlashCounts.get(String(s._id)) || 0
+				:	binaryClassicCounts.get(String(s._id)) || 0,
 			hasParticipated:
 				s.explain === false ?
 					binaryFlashParticipationSet.has(String(s._id))
@@ -63,6 +119,14 @@ exports.getAllSurveys = async (req, res, next) => {
 		const formattedMultiple = surveysMultiple.map((s) => ({
 			...s,
 			type: 'multiple',
+			totalVotes:
+				s.explain === false ?
+					multipleFlashCounts.get(String(s._id)) || 0
+				:	multipleClassicCounts.get(String(s._id)) || 0,
+			opinionsCount:
+				s.explain === false ?
+					multipleFlashCounts.get(String(s._id)) || 0
+				:	multipleClassicCounts.get(String(s._id)) || 0,
 			hasParticipated:
 				s.explain === false ?
 					multipleFlashParticipationSet.has(String(s._id))

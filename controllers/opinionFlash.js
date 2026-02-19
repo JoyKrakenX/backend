@@ -2,17 +2,12 @@
 
 const OpinionFlash = require('../models/Opinion_Flash');
 
-const emitFlashReaction = (req, opinion, userId) => {
+const emitFlashReaction = (req, opinion) => {
 	const io = req.app.get('io');
 	io.to(`flash-binary-${opinion.surveyId}`).emit('flash:reaction', {
 		opinionId: opinion._id.toString(),
 		likeCount: opinion.likes.length,
 		dislikeCount: opinion.dislikes.length,
-		actorUserId: String(userId),
-		actorUserLiked: opinion.likes.some((id) => String(id) === String(userId)),
-		actorUserDisliked: opinion.dislikes.some(
-			(id) => String(id) === String(userId),
-		),
 	});
 };
 
@@ -43,7 +38,7 @@ exports.toggleLike = async (req, res) => {
 		opinion.dislikes = [...new Set(opinion.dislikes.map((id) => id.toString()))];
 
 		await opinion.save();
-		emitFlashReaction(req, opinion, userId);
+		emitFlashReaction(req, opinion);
 
 		res.status(200).json({
 			likeCount: opinion.likes.length,
@@ -82,7 +77,7 @@ exports.toggleDislike = async (req, res) => {
 		opinion.dislikes = [...new Set(opinion.dislikes.map((id) => id.toString()))];
 
 		await opinion.save();
-		emitFlashReaction(req, opinion, userId);
+		emitFlashReaction(req, opinion);
 
 		res.status(200).json({
 			likeCount: opinion.likes.length,

@@ -10,6 +10,7 @@ const { normalizeQuestion } = require('../utils/questionNormalizer');
 const {
 	buildAdminProfilesByUserId,
 	anonymizeOpinionsForSurvey,
+	buildSurveyAlias,
 } = require('../utils/commentAnonymizer');
 const {
 	extractIncomingOptions,
@@ -38,6 +39,7 @@ const parseExplainFlag = (value) => {
 };
 
 const toObjectId = (id) => new mongoose.Types.ObjectId(String(id));
+const getClassicRoom = (surveyId) => `classic-multiple-${String(surveyId)}`;
 
 const getMultipleOpinionModel = (survey) =>
 	survey && survey.explain === false ? Opinion2Flash : Opinion_2;
@@ -65,6 +67,52 @@ const syncCanonicalOptionsOnDocument = (surveyDocument) => {
 	surveyDocument.options = options;
 	Object.assign(surveyDocument, buildLegacyOptionFields(options));
 	return options;
+};
+
+const emitClassicMultipleCounts = ({
+	io,
+	survey,
+	options,
+	counts,
+	totalOpinions,
+	isClosed,
+}) => {
+	if (!io || !survey) return;
+	const safeOptions = options || resolveSurveyOptions(survey);
+	const optionKeys = buildOptionKeys(safeOptions);
+	const labels = buildLabelsMapFromOptions(safeOptions);
+	const safeCounts = counts || buildCountsMapFromOpinions([], optionKeys);
+
+	io.to(getClassicRoom(survey._id)).emit('classic:counts', {
+		surveyId: String(survey._id),
+		type: 'multiple',
+		options: safeOptions,
+		optionKeys,
+		labels,
+		counts: safeCounts,
+		totalOpinions: Number(totalOpinions || 0),
+		isClosed: Boolean(isClosed),
+	});
+};
+
+const emitClassicMultipleOpinion = ({ io, survey, opinion }) => {
+	const reason = String(opinion?.reason || '').trim();
+	if (!io || !survey || !opinion || !reason) return;
+
+	io.to(getClassicRoom(survey._id)).emit('classic:new-opinion', {
+		_id: String(opinion._id),
+		answer: String(opinion.answer || ''),
+		reason,
+		surveyId: String(opinion.surveyId),
+		type: 'multiple',
+		userPseudo: buildSurveyAlias(survey._id, opinion.userId),
+		createdAt: opinion.createdAt,
+		likeCount: 0,
+		dislikeCount: 0,
+		userLiked: false,
+		userDisliked: false,
+		isOwnOpinion: false,
+	});
 };
 
 exports.createSurvey = async (req, res) => {
@@ -108,6 +156,7 @@ exports.createSurvey = async (req, res) => {
 		broadcastSurveyNewPush({
 			surveyId: savedSurvey._id,
 			surveyType: 'multiple',
+			explain: savedSurvey.explain,
 			theme: savedSurvey.theme,
 			creatorName: req.userPseudo || 'Administrateur',
 			excludeUserId: req.userId,
@@ -156,6 +205,55 @@ exports.getOneSurvey = async (req, res) => {
 		return res.status(200).json(normalizeSurveyForResponse(survey));
 	} catch (error) {
 		return res.status(500).json({ error });
+	}
+};
+
+exports.getState = async (req, res) => {
+	try {
+		const surveyId = req.params.id;
+		const survey = await Survey_2.findById(surveyId).lean();
+
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		if (survey.explain === false) {
+			return res.status(400).json({
+				message: 'Ce sondage est en mode Flash. Utilisez les endpoints Flash dedies.',
+			});
+		}
+
+		const hasParticipated = Boolean(
+			await Opinion_2.findOne({
+				surveyId: survey._id,
+				userId: req.userId,
+			})
+				.select('_id')
+				.lean(),
+		);
+		const canManage = canManageSurvey(survey, req);
+		const canVote = !survey.isClosed && !hasParticipated;
+		const canViewResults = hasParticipated || canManage;
+		let message = '';
+
+		if (!canViewResults) {
+			message = survey.isClosed ?
+				'Ce sondage est cloture. Les resultats sont reserves aux votants.'
+			:	'Votez pour acceder aux resultats en temps reel.';
+		}
+
+		return res.status(200).json({
+			survey: normalizeSurveyForResponse(survey),
+			type: 'multiple',
+			isClosed: Boolean(survey.isClosed),
+			hasParticipated,
+			canVote,
+			canViewResults,
+			message,
+		});
+	} catch (error) {
+		console.error('survey_2.getState error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
 
@@ -210,8 +308,22 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
-
-		const totalOpinions = await Opinion_2.countDocuments({ surveyId: survey._id });
+		const io = req.app.get('io');
+		const normalizedSurvey = normalizeSurveyForResponse(survey);
+		const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+			Opinion_2,
+			survey._id,
+			normalizedSurvey.optionKeys,
+		);
+		emitClassicMultipleOpinion({ io, survey, opinion });
+		emitClassicMultipleCounts({
+			io,
+			survey,
+			options: normalizedSurvey.options,
+			counts,
+			totalOpinions,
+			isClosed: survey.isClosed,
+		});
 
 		emitSurveyFeedUpdate(req.app.get('io'), {
 			action: 'vote',
@@ -225,7 +337,12 @@ exports.submitOpinion = async (req, res) => {
 			totalOpinions,
 			occurredAt: new Date(),
 		});
-		return res.status(201).json({ message: 'Opinion enregistree !' });
+		return res.status(201).json({
+			message: 'Opinion enregistree !',
+			hasParticipated: true,
+			canVote: false,
+			canViewResults: true,
+		});
 	} catch (error) {
 		if (error?.code === 11000) {
 			return res.status(403).json({ message: 'Vous avez deja repondu a ce sondage.' });
@@ -282,6 +399,7 @@ exports.closeSurvey = async (req, res) => {
 		broadcastSurveyClosedPush({
 			surveyId: survey._id,
 			surveyType: 'multiple',
+			explain: survey.explain,
 			theme: survey.theme,
 			participantUserIds,
 		}).catch((error) =>
@@ -289,9 +407,9 @@ exports.closeSurvey = async (req, res) => {
 		);
 
 		let finalTotalOpinions = null;
+		const io = req.app.get('io');
 
 		if (survey.explain === false) {
-			const io = req.app.get('io');
 			const room = `flash-multiple-${survey._id}`;
 			const optionKeys = buildOptionKeys(options);
 			const labels = buildLabelsMapFromOptions(options);
@@ -319,7 +437,26 @@ exports.closeSurvey = async (req, res) => {
 				endedAt: survey.endedAt,
 			});
 		} else {
-			finalTotalOpinions = await Opinion_2.countDocuments({ surveyId: survey._id });
+			const optionKeys = buildOptionKeys(options);
+			const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+				Opinion_2,
+				survey._id,
+				optionKeys,
+			);
+			finalTotalOpinions = totalOpinions;
+			emitClassicMultipleCounts({
+				io,
+				survey,
+				options,
+				counts,
+				totalOpinions,
+				isClosed: true,
+			});
+			io.to(getClassicRoom(survey._id)).emit('classic:closed', {
+				surveyId: String(survey._id),
+				type: 'multiple',
+				endedAt: survey.endedAt,
+			});
 		}
 
 		emitSurveyFeedUpdate(req.app.get('io'), {
@@ -354,17 +491,32 @@ exports.getDetailedStats = async (req, res) => {
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		if (!survey.isClosed) {
+		const optionPayload = buildSurveyOptionPayload(survey);
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const hasParticipated = Boolean(
+			await OpinionModel.findOne({
+				surveyId: survey._id,
+				userId: req.userId,
+			})
+				.select('_id')
+				.lean(),
+		);
+		const allowAdminFilters = canManageSurvey(survey, req);
+		const canViewResults = hasParticipated || allowAdminFilters;
+		const canVote = !survey.isClosed && !hasParticipated;
+		if (!canViewResults) {
+			if (survey.isClosed) {
+				return res.status(403).json({
+					message: 'Ce sondage est cloture. Les resultats sont reserves aux votants.',
+				});
+			}
 			return res.status(403).json({
-				message: "Le sondage n'est pas encore cloture. Resultats indisponibles",
+				message: 'Votez pour acceder aux resultats en temps reel.',
 			});
 		}
 
-		const optionPayload = buildSurveyOptionPayload(survey);
-		const OpinionModel = getMultipleOpinionModel(survey);
 		const opinions = await OpinionModel.find({ surveyId }).lean();
 		const counts = buildCountsMapFromOpinions(opinions, optionPayload.optionKeys);
-		const allowAdminFilters = canManageSurvey(survey, req);
 		let adminProfilesByUserId = null;
 
 		if (allowAdminFilters) {
@@ -407,6 +559,10 @@ exports.getDetailedStats = async (req, res) => {
 
 		return res.status(200).json({
 			totalOpinions: opinions.length,
+			isClosed: Boolean(survey.isClosed),
+			hasParticipated,
+			canVote,
+			canViewResults: true,
 			options: optionPayload.options,
 			optionKeys: optionPayload.optionKeys,
 			labels: optionPayload.labels,

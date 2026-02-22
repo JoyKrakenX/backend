@@ -2,6 +2,19 @@
 
 const Opinion = require('../models/Opinion');
 
+const emitClassicReaction = (req, opinion) => {
+	const io = req.app.get('io');
+	if (!io || !opinion?.surveyId) return;
+
+	io.to(`classic-binary-${opinion.surveyId}`).emit('classic:reaction', {
+		surveyId: String(opinion.surveyId),
+		type: 'binary',
+		opinionId: String(opinion._id),
+		likeCount: opinion.likes.length,
+		dislikeCount: opinion.dislikes.length,
+	});
+};
+
 exports.toggleLike = async (req, res, next) => {
 	try {
 		const opinion = await Opinion.findById(req.params.id);
@@ -32,6 +45,7 @@ exports.toggleLike = async (req, res, next) => {
 		];
 
 		await opinion.save();
+		emitClassicReaction(req, opinion);
 
 		res.json({
 			likeCount: opinion.likes.length,
@@ -75,6 +89,7 @@ exports.toggleDislike = async (req, res, next) => {
 		];
 
 		await opinion.save();
+		emitClassicReaction(req, opinion);
 
 		res.json({
 			likeCount: opinion.likes.length,

@@ -18,14 +18,13 @@ function resolveTargetPages(type, explain) {
 	if (type === 'binary') {
 		return {
 			answer: explain ? 'survey.html' : 'survey-flash-binary.html',
-			results: explain ? 'survey-results.html' : 'survey-results-admin.html',
+			results: explain ? 'survey.html' : 'survey-results-admin.html',
 		};
 	}
 
 	return {
 		answer: explain ? 'survey-choices.html' : 'survey-flash-multiple.html',
-		results:
-			explain ? 'survey-choices-results.html' : 'survey-results-admin.html',
+		results: explain ? 'survey-choices.html' : 'survey-results-admin.html',
 	};
 }
 
@@ -182,9 +181,7 @@ router.post('/generate', async (req, res) => {
 		const resultsQuery =
 			isFlashSurvey ?
 				{ Id: surveyId, type, flash: 1 }
-			: type === 'binary' ?
-				{ id: surveyId, type }
-			:	{ Id: surveyId, id: surveyId, type };
+			:	{ id: surveyId, type };
 
 		const urls = {
 			answer: buildFrontendUrl(req, pages.answer, answerQuery),

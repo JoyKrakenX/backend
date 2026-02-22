@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const chatHandlers = require('./sockets/chatHandlers');
 const supportHandlers = require('./sockets/supportHandlers');
 const flashSurveyHandlers = require('./sockets/flashSurveyHandlers');
+const classicSurveyHandlers = require('./sockets/classicSurveyHandlers');
 const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
 
 const normalizePort = (val) => {
@@ -26,6 +27,7 @@ app.set('io', io);
 
 chatHandlers(io);
 flashSurveyHandlers(io);
+classicSurveyHandlers(io);
 surveyFeedHandlers(io);
 supportHandlers(io.of('/support'));
 

@@ -94,20 +94,32 @@ const getSurveyStrings = (locale) =>
 	SURVEY_PUSH_TRANSLATIONS[normalizeLocale(locale)] ||
 	SURVEY_PUSH_TRANSLATIONS.fr;
 
-const resolveSurveyUrl = ({ surveyId, surveyType, closed = false }) => {
+const resolveSurveyUrl = ({
+	surveyId,
+	surveyType,
+	closed = false,
+	explain = true,
+}) => {
 	const normalizedId = String(surveyId || '').trim();
 	if (!normalizedId) return '/browse-surveys.html';
 
 	const normalizedType = String(surveyType || 'binary').toLowerCase();
+	const isClassicSurvey = explain !== false;
 
-	if (closed) {
+	if (closed && !isClassicSurvey) {
 		return normalizedType === 'multiple' ?
-				`/survey-choices-results.html?id=${encodeURIComponent(normalizedId)}`
-			:	`/survey-results.html?id=${encodeURIComponent(normalizedId)}`;
+				`/survey-flash-multiple.html?id=${encodeURIComponent(normalizedId)}`
+			:	`/survey-flash-binary.html?id=${encodeURIComponent(normalizedId)}`;
 	}
 
-	return normalizedType === 'multiple' ?
-			`/survey-choices.html?id=${encodeURIComponent(normalizedId)}`
+	if (normalizedType === 'multiple') {
+		return explain === false ?
+				`/survey-flash-multiple.html?id=${encodeURIComponent(normalizedId)}`
+			:	`/survey-choices.html?id=${encodeURIComponent(normalizedId)}`;
+	}
+
+	return explain === false ?
+			`/survey-flash-binary.html?id=${encodeURIComponent(normalizedId)}`
 		:	`/survey.html?id=${encodeURIComponent(normalizedId)}`;
 };
 
@@ -115,6 +127,7 @@ const buildSurveyNewPayload = ({
 	locale,
 	surveyId,
 	surveyType = 'binary',
+	explain = true,
 	theme,
 	creatorName,
 }) => {
@@ -132,7 +145,12 @@ const buildSurveyNewPayload = ({
 			theme: safeTheme,
 			creator: safeCreator,
 		}),
-		url: resolveSurveyUrl({ surveyId, surveyType, closed: false }),
+		url: resolveSurveyUrl({
+			surveyId,
+			surveyType,
+			explain,
+			closed: false,
+		}),
 		receivedAt: new Date().toISOString(),
 	});
 };
@@ -141,6 +159,7 @@ const buildSurveyClosedPayload = ({
 	locale,
 	surveyId,
 	surveyType = 'binary',
+	explain = true,
 	theme,
 }) => {
 	const strings = getSurveyStrings(locale);
@@ -155,7 +174,12 @@ const buildSurveyClosedPayload = ({
 		body: formatTemplate(strings.surveyClosedBody, {
 			theme: safeTheme,
 		}),
-		url: resolveSurveyUrl({ surveyId, surveyType, closed: true }),
+		url: resolveSurveyUrl({
+			surveyId,
+			surveyType,
+			explain,
+			closed: true,
+		}),
 		receivedAt: new Date().toISOString(),
 	});
 };
@@ -665,6 +689,7 @@ const broadcastClientReplyPush = async ({
 const broadcastSurveyNewPush = async ({
 	surveyId,
 	surveyType = 'binary',
+	explain = true,
 	theme,
 	creatorName,
 	excludeUserId,
@@ -700,6 +725,7 @@ const broadcastSurveyNewPush = async ({
 				locale,
 				surveyId,
 				surveyType,
+				explain,
 				theme,
 				creatorName,
 			}),
@@ -709,6 +735,7 @@ const broadcastSurveyNewPush = async ({
 const broadcastSurveyClosedPush = async ({
 	surveyId,
 	surveyType = 'binary',
+	explain = true,
 	theme,
 	participantUserIds = [],
 }) => {
@@ -751,6 +778,7 @@ const broadcastSurveyClosedPush = async ({
 				locale,
 				surveyId,
 				surveyType,
+				explain,
 				theme,
 			}),
 	});

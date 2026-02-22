@@ -9,6 +9,8 @@ router.post('/', auth, survey_2_Ctrl.createSurvey);
 
 router.post('/:id/answer', auth, survey_2_Ctrl.submitOpinion);
 
+router.get('/:id/state', auth, survey_2_Ctrl.getState);
+
 router.get('/:id/results', auth, survey_2_Ctrl.getFlashStats);
 
 router.get('/:id/detailed-results', auth, survey_2_Ctrl.getDetailedStats);

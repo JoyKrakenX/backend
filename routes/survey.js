@@ -12,6 +12,8 @@ router.post('/', auth, surveyCtrl.createSurvey);
 
 router.get('/:id', auth, surveyCtrl.getOneSurvey);
 
+router.get('/:id/state', auth, surveyCtrl.getState);
+
 router.get('/:id/results', auth, surveyCtrl.getFlashStats);
 
 router.get('/:id/detailed-results', auth, surveyCtrl.getDetailedStats);

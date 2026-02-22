@@ -104,12 +104,26 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Frontend statique + SPA catch-all
 // ---------------------------
 // Sert tout le dossier frontend
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.use(
+	express.static(path.join(__dirname, '../frontend'), {
+		setHeaders: (res, filePath) => {
+			const normalizedPath = String(filePath || '').toLowerCase();
+			if (normalizedPath.endsWith('.html')) {
+				res.setHeader('Content-Type', 'text/html; charset=utf-8');
+				return;
+			}
+			if (normalizedPath.endsWith('.json')) {
+				res.setHeader('Content-Type', 'application/json; charset=utf-8');
+			}
+		},
+	}),
+);
 
 // Middleware catch-all pour toutes les routes non-API
 // Toujours après les routes API
 app.use((req, res, next) => {
 	if (req.path.startsWith('/api')) return next();
+	res.setHeader('Content-Type', 'text/html; charset=utf-8');
 	res.sendFile(path.join(__dirname, '../frontend/browse-surveys.html'));
 });
 

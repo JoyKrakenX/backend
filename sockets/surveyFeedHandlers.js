@@ -1,6 +1,7 @@
 /** @format */
 
 const jwt = require('jsonwebtoken');
+const { normalizeSurveyStatus } = require('../utils/surveyStatus');
 
 const BROWSE_ROOM = 'surveys:browse';
 const ownerRoom = (ownerUserId) => `surveys:owner:${String(ownerUserId)}`;
@@ -61,6 +62,7 @@ const buildSurveyFeedPayload = (payload = {}) => {
 		surveyId,
 		type: normalizedType,
 		explain: payload.explain === false ? false : true,
+		status: normalizeSurveyStatus(payload.status),
 		isClosed: Boolean(payload.isClosed),
 		ownerUserId,
 		createdAt: toIsoOrNull(payload.createdAt),

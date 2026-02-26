@@ -6,6 +6,7 @@ const Opinion = require('../models/Opinion');
 const Opinion_2 = require('../models/Opinion_2');
 const Opinion_Flash = require('../models/Opinion_Flash');
 const Opinion_2_Flash = require('../models/Opinion_2_Flash');
+const { normalizeSurveyStatus } = require('../utils/surveyStatus');
 
 const toSurveyIds = (surveys) =>
 	Array.isArray(surveys) ? surveys.map((survey) => survey?._id).filter(Boolean) : [];
@@ -54,6 +55,7 @@ exports.getMySurveys = async (req, res, next) => {
 
 		const formattedBinary = binary.map((s) => ({
 			...s,
+			status: normalizeSurveyStatus(s.status),
 			type: 'binary',
 			totalVotes:
 				s.explain === false ?
@@ -67,6 +69,7 @@ exports.getMySurveys = async (req, res, next) => {
 
 		const formattedMultiple = multiple.map((s) => ({
 			...s,
+			status: normalizeSurveyStatus(s.status),
 			type: 'multiple',
 			totalVotes:
 				s.explain === false ?

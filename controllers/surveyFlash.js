@@ -9,6 +9,7 @@ const {
 	buildAdminProfilesByUserId,
 	anonymizeOpinionsForSurvey,
 } = require('../utils/commentAnonymizer');
+const { normalizeSurveyStatus } = require('../utils/surveyStatus');
 
 const canManageSurvey = (survey, req) =>
 	req.userRole === 'admin' ||
@@ -22,6 +23,7 @@ const sanitizeSurveyForClient = (survey) => {
 		question: source?.question,
 		contexte: source?.contexte,
 		explain: source?.explain,
+		status: normalizeSurveyStatus(source?.status),
 		isClosed: Boolean(source?.isClosed),
 		createdAt: source?.createdAt,
 		endedAt: source?.endedAt || null,
@@ -189,6 +191,7 @@ exports.submitOpinion = async (req, res) => {
 			surveyId: survey._id,
 			type: 'binary',
 			explain: survey.explain,
+			status: normalizeSurveyStatus(survey.status),
 			isClosed: Boolean(survey.isClosed),
 			ownerUserId: survey.userId,
 			createdAt: survey.createdAt,

@@ -17,6 +17,7 @@ const {
 	broadcastSurveyClosedPush,
 } = require('../services/supportPushService');
 const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
+const { normalizeSurveyStatus } = require('../utils/surveyStatus');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -103,6 +104,7 @@ exports.createSurvey = async (req, res) => {
 			contexte: req.body.contexte,
 			question: normalizeQuestion(req.body.question),
 			explain: parseExplainFlag(req.body.explain),
+			status: normalizeSurveyStatus(req.body.status),
 			userId: req.userId,
 		});
 
@@ -124,6 +126,7 @@ exports.createSurvey = async (req, res) => {
 			surveyId: savedSurvey._id,
 			type: 'binary',
 			explain: savedSurvey.explain,
+			status: normalizeSurveyStatus(savedSurvey.status),
 			isClosed: Boolean(savedSurvey.isClosed),
 			ownerUserId: savedSurvey.userId,
 			createdAt: savedSurvey.createdAt,
@@ -134,6 +137,7 @@ exports.createSurvey = async (req, res) => {
 			message: 'Survey saved !',
 			surveyId: savedSurvey._id,
 			explain: savedSurvey.explain,
+			status: normalizeSurveyStatus(savedSurvey.status),
 		});
 	} catch (error) {
 		if (error && error.code === 11000) {
@@ -275,6 +279,7 @@ exports.submitOpinion = async (req, res) => {
 			surveyId: survey._id,
 			type: 'binary',
 			explain: survey.explain,
+			status: normalizeSurveyStatus(survey.status),
 			isClosed: Boolean(survey.isClosed),
 			ownerUserId: survey.userId,
 			createdAt: survey.createdAt,
@@ -488,6 +493,7 @@ exports.closeSurvey = async (req, res) => {
 			surveyId: survey._id,
 			type: 'binary',
 			explain: survey.explain,
+			status: normalizeSurveyStatus(survey.status),
 			isClosed: true,
 			ownerUserId: survey.userId,
 			createdAt: survey.createdAt,

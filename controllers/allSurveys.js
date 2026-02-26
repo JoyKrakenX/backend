@@ -6,6 +6,10 @@ const Opinion = require('../models/Opinion');
 const Opinion_2 = require('../models/Opinion_2');
 const Opinion_Flash = require('../models/Opinion_Flash');
 const Opinion_2_Flash = require('../models/Opinion_2_Flash');
+const {
+	normalizeSurveyStatus,
+	isSurveyPublic,
+} = require('../utils/surveyStatus');
 
 const settledValueOr = (result, fallback) =>
 	result && result.status === 'fulfilled' ? result.value : fallback;
@@ -35,6 +39,7 @@ const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) => {
 exports.getAllSurveys = async (req, res, next) => {
 	try {
 		const userId = req.userId || null;
+		const requesterUserId = userId ? String(userId) : '';
 		const settled = await Promise.allSettled([
 			Survey.find().lean(),
 			Survey_2.find().lean(),
@@ -101,6 +106,7 @@ exports.getAllSurveys = async (req, res, next) => {
 
 		const formattedBinary = surveysBinary.map((s) => ({
 			...s,
+			status: normalizeSurveyStatus(s.status),
 			type: 'binary',
 			totalVotes:
 				s.explain === false ?
@@ -118,6 +124,7 @@ exports.getAllSurveys = async (req, res, next) => {
 
 		const formattedMultiple = surveysMultiple.map((s) => ({
 			...s,
+			status: normalizeSurveyStatus(s.status),
 			type: 'multiple',
 			totalVotes:
 				s.explain === false ?
@@ -133,7 +140,18 @@ exports.getAllSurveys = async (req, res, next) => {
 				:	multipleParticipationSet.has(String(s._id)),
 		}));
 
-		const allSurveys = [...formattedBinary, ...formattedMultiple];
+		const allSurveys = [...formattedBinary, ...formattedMultiple].filter(
+			(survey) => {
+				const normalizedStatus = normalizeSurveyStatus(survey.status);
+				if (isSurveyPublic(normalizedStatus)) return true;
+
+				if (!survey.isClosed) return false;
+				const isOwner =
+					Boolean(requesterUserId) &&
+					String(survey.userId || '') === requesterUserId;
+				return Boolean(survey.hasParticipated || isOwner);
+			},
+		);
 
 		allSurveys.sort((a, b) => {
 			return new Date(b.createdAt) - new Date(a.createdAt);

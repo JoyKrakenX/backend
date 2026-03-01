@@ -11,6 +11,26 @@ const {
 	isSurveyPublic,
 } = require('../utils/surveyStatus');
 
+const DEFAULT_ALL_SURVEYS_MAX_ITEMS = 500;
+const ALL_SURVEYS_MIN_ITEMS = 50;
+const ALL_SURVEYS_MAX_ALLOWED_ITEMS = 3000;
+const ALL_SURVEYS_MAX_ITEMS = (() => {
+	const parsed = Number.parseInt(process.env.ALL_SURVEYS_MAX_ITEMS || '', 10);
+	if (!Number.isFinite(parsed)) return DEFAULT_ALL_SURVEYS_MAX_ITEMS;
+	return Math.min(
+		Math.max(parsed, ALL_SURVEYS_MIN_ITEMS),
+		ALL_SURVEYS_MAX_ALLOWED_ITEMS,
+	);
+})();
+
+const MAX_ITEMS_PER_MODEL = Math.max(
+	ALL_SURVEYS_MIN_ITEMS,
+	Math.ceil(ALL_SURVEYS_MAX_ITEMS * 1.2),
+);
+
+const SURVEY_LIST_PROJECTION =
+	'_id theme question contexte explain status createdAt userId organizationId isClosed endedAt';
+
 const settledValueOr = (result, fallback) =>
 	result && result.status === 'fulfilled' ? result.value : fallback;
 
@@ -36,25 +56,38 @@ const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) => {
 	return new Map(rows.map((row) => [String(row._id), Number(row.count) || 0]));
 };
 
+const distinctSurveyParticipation = async (
+	OpinionModel,
+	userId,
+	limitedSurveyIds = [],
+) => {
+	if (!userId || !limitedSurveyIds.length) return [];
+	return OpinionModel.distinct('surveyId', {
+		userId,
+		surveyId: { $in: limitedSurveyIds },
+	});
+};
+
 exports.getAllSurveys = async (req, res, next) => {
 	try {
 		const userId = req.userId || null;
 		const requesterUserId = userId ? String(userId) : '';
+
 		const settled = await Promise.allSettled([
-			Survey.find().lean(),
-			Survey_2.find().lean(),
-			userId ? Opinion.distinct('surveyId', { userId }) : [],
-			userId ? Opinion_2.distinct('surveyId', { userId }) : [],
-			userId ? Opinion_Flash.distinct('surveyId', { userId }) : [],
-			userId ? Opinion_2_Flash.distinct('surveyId', { userId }) : [],
+			Survey.find({})
+				.select(SURVEY_LIST_PROJECTION)
+				.sort({ createdAt: -1 })
+				.limit(MAX_ITEMS_PER_MODEL)
+				.lean(),
+			Survey_2.find({})
+				.select(SURVEY_LIST_PROJECTION)
+				.sort({ createdAt: -1 })
+				.limit(MAX_ITEMS_PER_MODEL)
+				.lean(),
 		]);
 
 		const surveysBinary = settledValueOr(settled[0], []);
 		const surveysMultiple = settledValueOr(settled[1], []);
-		const binaryParticipations = settledValueOr(settled[2], []);
-		const multipleParticipations = settledValueOr(settled[3], []);
-		const binaryFlashParticipations = settledValueOr(settled[4], []);
-		const multipleFlashParticipations = settledValueOr(settled[5], []);
 
 		settled.forEach((entry, index) => {
 			if (entry.status === 'rejected') {
@@ -65,9 +98,26 @@ exports.getAllSurveys = async (req, res, next) => {
 			}
 		});
 
+		const binaryIds = toSurveyIds(surveysBinary);
+		const multipleIds = toSurveyIds(surveysMultiple);
+
+		const [
+			binaryParticipations,
+			multipleParticipations,
+			binaryFlashParticipations,
+			multipleFlashParticipations,
+		] = await Promise.all([
+			distinctSurveyParticipation(Opinion, userId, binaryIds),
+			distinctSurveyParticipation(Opinion_2, userId, multipleIds),
+			distinctSurveyParticipation(Opinion_Flash, userId, binaryIds),
+			distinctSurveyParticipation(Opinion_2_Flash, userId, multipleIds),
+		]);
+
 		const binaryClassic = surveysBinary.filter((survey) => survey.explain !== false);
 		const binaryFlash = surveysBinary.filter((survey) => survey.explain === false);
-		const multipleClassic = surveysMultiple.filter((survey) => survey.explain !== false);
+		const multipleClassic = surveysMultiple.filter(
+			(survey) => survey.explain !== false,
+		);
 		const multipleFlash = surveysMultiple.filter((survey) => survey.explain === false);
 
 		const voteSettled = await Promise.allSettled([
@@ -104,44 +154,44 @@ exports.getAllSurveys = async (req, res, next) => {
 			(multipleFlashParticipations || []).map((id) => String(id)),
 		);
 
-		const formattedBinary = surveysBinary.map((s) => ({
-			...s,
-			status: normalizeSurveyStatus(s.status),
+		const formattedBinary = surveysBinary.map((survey) => ({
+			...survey,
+			status: normalizeSurveyStatus(survey.status),
 			type: 'binary',
 			totalVotes:
-				s.explain === false ?
-					binaryFlashCounts.get(String(s._id)) || 0
-				:	binaryClassicCounts.get(String(s._id)) || 0,
+				survey.explain === false ?
+					binaryFlashCounts.get(String(survey._id)) || 0
+				:	binaryClassicCounts.get(String(survey._id)) || 0,
 			opinionsCount:
-				s.explain === false ?
-					binaryFlashCounts.get(String(s._id)) || 0
-				:	binaryClassicCounts.get(String(s._id)) || 0,
+				survey.explain === false ?
+					binaryFlashCounts.get(String(survey._id)) || 0
+				:	binaryClassicCounts.get(String(survey._id)) || 0,
 			hasParticipated:
-				s.explain === false ?
-					binaryFlashParticipationSet.has(String(s._id))
-				:	binaryParticipationSet.has(String(s._id)),
+				survey.explain === false ?
+					binaryFlashParticipationSet.has(String(survey._id))
+				:	binaryParticipationSet.has(String(survey._id)),
 		}));
 
-		const formattedMultiple = surveysMultiple.map((s) => ({
-			...s,
-			status: normalizeSurveyStatus(s.status),
+		const formattedMultiple = surveysMultiple.map((survey) => ({
+			...survey,
+			status: normalizeSurveyStatus(survey.status),
 			type: 'multiple',
 			totalVotes:
-				s.explain === false ?
-					multipleFlashCounts.get(String(s._id)) || 0
-				:	multipleClassicCounts.get(String(s._id)) || 0,
+				survey.explain === false ?
+					multipleFlashCounts.get(String(survey._id)) || 0
+				:	multipleClassicCounts.get(String(survey._id)) || 0,
 			opinionsCount:
-				s.explain === false ?
-					multipleFlashCounts.get(String(s._id)) || 0
-				:	multipleClassicCounts.get(String(s._id)) || 0,
+				survey.explain === false ?
+					multipleFlashCounts.get(String(survey._id)) || 0
+				:	multipleClassicCounts.get(String(survey._id)) || 0,
 			hasParticipated:
-				s.explain === false ?
-					multipleFlashParticipationSet.has(String(s._id))
-				:	multipleParticipationSet.has(String(s._id)),
+				survey.explain === false ?
+					multipleFlashParticipationSet.has(String(survey._id))
+				:	multipleParticipationSet.has(String(survey._id)),
 		}));
 
-		const allSurveys = [...formattedBinary, ...formattedMultiple].filter(
-			(survey) => {
+		const allSurveys = [...formattedBinary, ...formattedMultiple]
+			.filter((survey) => {
 				const normalizedStatus = normalizeSurveyStatus(survey.status);
 				if (isSurveyPublic(normalizedStatus)) return true;
 
@@ -150,12 +200,12 @@ exports.getAllSurveys = async (req, res, next) => {
 					Boolean(requesterUserId) &&
 					String(survey.userId || '') === requesterUserId;
 				return Boolean(survey.hasParticipated || isOwner);
-			},
-		);
+			})
+			.sort((left, right) => {
+				return new Date(right.createdAt) - new Date(left.createdAt);
+			})
+			.slice(0, ALL_SURVEYS_MAX_ITEMS);
 
-		allSurveys.sort((a, b) => {
-			return new Date(b.createdAt) - new Date(a.createdAt);
-		});
 		res.status(200).json(allSurveys);
 	} catch (error) {
 		console.error(error);

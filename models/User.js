@@ -29,6 +29,12 @@ const userSchema = new mongoose.Schema({
 		type: String,
 		enum: ['homme', 'femme'],
 	},
+	defaultOrganizationId: {
+		type: mongoose.Schema.Types.ObjectId,
+		ref: 'Organization',
+		default: null,
+		index: true,
+	},
 	createdAt: { type: Date, default: Date.now },
 });
 

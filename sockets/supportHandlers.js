@@ -13,6 +13,7 @@ const {
 	normalizeEmail,
 	isSupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 const { isSupportBusinessHours } = require('../utils/supportBusinessHours');
 
 const categoryWeight = (category) => {
@@ -47,6 +48,7 @@ module.exports = (supportNamespace) => {
 	const isAllowlistedAgent = (user) =>
 		Boolean(user?.id) &&
 		isAgentRole(user?.role) &&
+		!isBillingExemptEmail(normalizeEmail(user?.email)) &&
 		isSupportAdminEmail(normalizeEmail(user?.email));
 
 	const updateAgentState = (userId, socketId, role) => {
@@ -222,7 +224,10 @@ module.exports = (supportNamespace) => {
 				}
 			}
 
-			if (isSupportAdminEmail(resolvedEmail)) {
+			if (
+				!isBillingExemptEmail(resolvedEmail) &&
+				isSupportAdminEmail(resolvedEmail)
+			) {
 				if (!isAgentRole(resolvedRole)) {
 					resolvedRole = 'admin';
 				}

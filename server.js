@@ -1,29 +1,48 @@
 /** @format */
 const http = require('http');
-const app = require('./app');
 const { Server } = require('socket.io');
+const { createAdapter } = require('@socket.io/redis-adapter');
+
+const app = require('./app');
 const chatHandlers = require('./sockets/chatHandlers');
 const supportHandlers = require('./sockets/supportHandlers');
 const flashSurveyHandlers = require('./sockets/flashSurveyHandlers');
 const classicSurveyHandlers = require('./sockets/classicSurveyHandlers');
 const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
+const { getRedisClient, getRedisSubscriber } = require('./services/redisService');
+const { registerBillingLifecycleJob } = require('./services/billing/billingLifecycleJob');
 
 const normalizePort = (val) => {
 	const port = parseInt(val, 10);
-	if (isNaN(port)) return val;
+	if (Number.isNaN(port)) return val;
 	if (port >= 0) return port;
 	return false;
 };
+
 const port = normalizePort(process.env.PORT || '3000');
 app.set('port', port);
 
 const server = http.createServer(app);
 
-// Socket.IO
 const io = new Server(server, {
-	cors: { origin: '*' }, // pour dev, adapte en production
+	cors: { origin: '*' },
 });
 app.set('io', io);
+
+const configureSocketAdapter = async () => {
+	try {
+		const redisPub = await getRedisClient();
+		const redisSub = await getRedisSubscriber();
+		if (!redisPub || !redisSub) {
+			console.log('Socket adapter Redis desactive (REDIS_URL absent).');
+			return;
+		}
+		io.adapter(createAdapter(redisPub, redisSub));
+		console.log('Socket adapter Redis active.');
+	} catch (error) {
+		console.error('Socket adapter Redis init failed:', error?.message || error);
+	}
+};
 
 chatHandlers(io);
 flashSurveyHandlers(io);
@@ -32,17 +51,16 @@ surveyFeedHandlers(io);
 supportHandlers(io.of('/support'));
 
 io.on('connection', (socket) => {
-	console.log('Client Socket.IO connecté', socket.id);
+	console.log('Client Socket.IO connecte', socket.id);
 	socket.on('disconnect', () => {
-		console.log('Client déconnecté', socket.id);
+		console.log('Client deconnecte', socket.id);
 	});
 });
 
 const errorHandler = (error) => {
 	if (error.syscall !== 'listen') throw error;
 	const address = server.address();
-	const bind =
-		typeof address === 'string' ? 'pipe ' + address : 'port: ' + port;
+	const bind = typeof address === 'string' ? 'pipe ' + address : 'port: ' + port;
 	switch (error.code) {
 		case 'EACCES':
 			console.error(bind + ' requires elevated privileges.');
@@ -64,4 +82,13 @@ server.on('listening', () => {
 	console.log('Listening on ' + bind);
 });
 
-server.listen(port);
+const start = async () => {
+	await configureSocketAdapter();
+	registerBillingLifecycleJob();
+	server.listen(port);
+};
+
+start().catch((error) => {
+	console.error('Server startup failed:', error);
+	process.exit(1);
+});

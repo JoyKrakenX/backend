@@ -11,6 +11,10 @@ require('../config/passport');
 const auth = require( '../middlewares/auth' );
 const User = require('../models/User');
 const { buildFrontendUrl } = require('../utils/publicUrls');
+const {
+	ensurePersonalOrganizationForUser,
+} = require('../services/organizationService');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 
 router.get(
 	'/google',
@@ -48,8 +52,9 @@ router.put('/pseudo', auth, userController.updatePseudo);
 
 router.get('/me', auth, async (req, res, next) => {
 	try {
+		await ensurePersonalOrganizationForUser({ _id: req.userId });
 		const user = await User.findById(req.userId).select(
-			'_id pseudo email role name picture',
+			'_id pseudo email role name picture defaultOrganizationId',
 		);
 		if (!user) {
 			return res.status(404).json({ message: 'Utilisateur introuvable.' });
@@ -61,7 +66,8 @@ router.get('/me', auth, async (req, res, next) => {
 			email: user.email,
 			name: user.name || null,
 			picture: user.picture || null,
-			role: user.role || 'user',
+			role: isBillingExemptEmail(user.email) ? 'user' : (user.role || 'user'),
+			defaultOrganizationId: user.defaultOrganizationId || null,
 		});
 	} catch (err) {
 		console.error('Erreur /api/auth/me:', err);

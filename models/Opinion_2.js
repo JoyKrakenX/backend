@@ -36,6 +36,11 @@ const opinion_2_Schema = new mongoose.Schema({
 });
 
 opinion_2_Schema.index(
+	{ userId: 1, surveyId: 1 },
+	{ name: 'userId_surveyId', background: true },
+);
+
+opinion_2_Schema.index(
 	{ surveyId: 1, userId: 1 },
 	{ unique: true, name: 'unique_opinion_per_user_per_survey' }
 );

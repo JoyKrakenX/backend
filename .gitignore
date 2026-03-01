@@ -1,3 +1,5 @@
 node_modules
 logs/
 backups/
+.env
+.env.*

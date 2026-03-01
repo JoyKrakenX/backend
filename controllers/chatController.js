@@ -4,6 +4,36 @@ const ChatMessage = require('../models/ChatMessage');
 const Survey = require('../models/Survey');
 const Survey_2 = require('../models/Survey_2');
 const mongoose = require('mongoose');
+const { authorizeAction } = require('../services/billing/entitlementService');
+const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
+const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
+const { getRedisClient } = require('../services/redisService');
+
+const getSurveyModelName = (type) =>
+	type === 'multiple' ? 'Survey_2' : 'Survey';
+
+const getSurveyModel = (type) => (type === 'multiple' ? Survey_2 : Survey);
+
+const getOnlineUsersCount = async ({ io, survey, surveyId }) => {
+	if (!io) return 0;
+
+	const roomName = `survey-${String(surveyId)}`;
+	const organizationId = await resolveSurveyOrganizationId(survey);
+	const redis = await getRedisClient();
+
+	if (redis && organizationId) {
+		const key = `presence:org:${String(organizationId)}:survey:${String(surveyId)}:online_users`;
+		return Number((await redis.scard(key)) || 0);
+	}
+
+	const presenceStore = io.chatPresence;
+	if (presenceStore && presenceStore.get(roomName)) {
+		return presenceStore.get(roomName).size;
+	}
+
+	const room = io.sockets.adapter.rooms.get(roomName);
+	return room ? room.size : 0;
+};
 
 // Récupérer les messages d'un sondage
 exports.getChatMessages = async (req, res, next) => {
@@ -17,10 +47,15 @@ exports.getChatMessages = async (req, res, next) => {
 		}
 
 		// Déterminer le modèle de sondage
-		const surveyModel = type === 'multiple' ? Survey_2 : Survey;
+		const surveyObjectId = new mongoose.Types.ObjectId(surveyId);
+		const surveyModel = getSurveyModel(type);
+		const surveyModelName = getSurveyModelName(type);
 
 		// Vérifier si le sondage existe
-		const survey = await surveyModel.findById(surveyId);
+		const survey = await surveyModel
+			.findById(surveyObjectId)
+			.select('theme question isClosed')
+			.lean();
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
@@ -31,10 +66,12 @@ exports.getChatMessages = async (req, res, next) => {
 		const skip = (pageNumber - 1) * limitNumber;
 
 		// Récupérer les messages
-		const messages = await ChatMessage.find({
-			surveyId,
-			surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
-		})
+		const messageFilter = {
+			surveyId: surveyObjectId,
+			surveyModel: surveyModelName,
+		};
+
+		const messages = await ChatMessage.find(messageFilter)
 			.sort({ createdAt: -1 })
 			.skip(skip)
 			.limit(limitNumber)
@@ -84,10 +121,7 @@ exports.getChatMessages = async (req, res, next) => {
 		});
 
 		// Compter le total des messages
-		const totalMessages = await ChatMessage.countDocuments({
-			surveyId,
-			surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
-		});
+		const totalMessages = await ChatMessage.countDocuments(messageFilter);
 		res.status(200).json({
 			messages: enrichedMessages,
 			surveyClosed: Boolean(survey.isClosed),
@@ -118,12 +152,11 @@ exports.getChatMessages = async (req, res, next) => {
 exports.sendMessage = async (req, res, next) => {
 	try {
 		const { surveyId } = req.params;
-		const { message, type, replyTo } = req.body; // Ajout de replyTo
+		const { message, type, replyTo } = req.body;
 
-		console.log('📝 Données reçues dans sendMessage:');
-		console.log('- message:', message);
-		console.log('- replyTo:', replyTo);
-		console.log('- type:', type);
+		if (!surveyId || !mongoose.Types.ObjectId.isValid(surveyId)) {
+			return res.status(400).json({ message: 'surveyId manquant ou invalide' });
+		}
 
 		if (!message || message.trim().length === 0) {
 			return res
@@ -137,16 +170,18 @@ exports.sendMessage = async (req, res, next) => {
 				.json({ message: 'Le message est trop long (max 500 caractères)' });
 		}
 
-		// Déterminer le modèle de sondage
-		const surveyModel = type === 'multiple' ? Survey_2 : Survey;
+		const surveyObjectId = new mongoose.Types.ObjectId(surveyId);
+		const surveyModel = getSurveyModel(type);
+		const surveyModelName = getSurveyModelName(type);
 
-		// Vérifier si le sondage existe
-		const survey = await surveyModel.findById(surveyId);
+		const survey = await surveyModel
+			.findById(surveyObjectId)
+			.select('isClosed organizationId userId')
+			.lean();
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		// Vérifier si le sondage est clôturé
 		if (survey.isClosed) {
 			return res.status(403).json({
 				message:
@@ -154,27 +189,36 @@ exports.sendMessage = async (req, res, next) => {
 			});
 		}
 
-		// Si replyTo est fourni, vérifier que le message existe
+		const organizationId = await resolveSurveyOrganizationId(survey);
+		const entitlement = await authorizeAction({
+			action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
+			organizationId,
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+		});
+		if (!entitlement.allowed) {
+			return res.status(403).json({
+				code: entitlement.code,
+				message: entitlement.message,
+			});
+		}
+
 		let replyToInfo = null;
 		if (replyTo) {
-			console.log('🔍 Recherche du message original avec ID:', replyTo);
 			const originalMessage = await ChatMessage.findOne({
 				_id: replyTo,
-				surveyId: surveyId,
-			});
+				surveyId: surveyObjectId,
+				surveyModel: surveyModelName,
+			})
+				.select('_id userId userPseudo message')
+				.lean();
 
 			if (!originalMessage) {
-				console.log('❌ Message original non trouvé');
 				return res.status(404).json({
 					message: 'Le message auquel vous répondez est introuvable',
 				});
 			}
 
-			console.log('✅ Message original trouvé:');
-			console.log('- Auteur:', originalMessage.userPseudo);
-			console.log('- Texte:', originalMessage.message);
-
-			// Stocker les infos du message original
 			replyToInfo = {
 				messageId: originalMessage._id,
 				userId: originalMessage.userId,
@@ -183,34 +227,21 @@ exports.sendMessage = async (req, res, next) => {
 			};
 		}
 
-		console.log('📋 replyToInfo créé:', replyToInfo);
-
-		// Créer le message
 		const chatMessage = new ChatMessage({
-			surveyId,
-			surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
+			surveyId: surveyObjectId,
+			surveyModel: surveyModelName,
 			userId: req.userId,
 			userPseudo: req.userPseudo,
 			message: message.trim(),
 			isSystemMessage: false,
 			replyTo: replyTo || null,
-			replyToInfo: replyToInfo,
+			replyToInfo,
 		});
 
-		console.log('💾 Sauvegarde du message...');
 		await chatMessage.save();
-		console.log('✅ Message sauvegardé avec ID:', chatMessage._id);
+		await chatMessage.populate('userId', 'pseudo picture');
+		const populatedMessage = chatMessage.toObject();
 
-		// Populate pour obtenir les infos utilisateur
-		const populatedMessage = await ChatMessage.findById(chatMessage._id)
-			.populate('userId', 'pseudo picture')
-			.lean();
-
-		console.log('📦 Message peuplé récupéré:');
-		console.log('- replyTo dans DB:', populatedMessage.replyTo);
-		console.log('- replyToInfo dans DB:', populatedMessage.replyToInfo);
-
-		// Formater la réponse
 		const formattedMessage = {
 			...populatedMessage,
 			id: populatedMessage._id,
@@ -228,7 +259,6 @@ exports.sendMessage = async (req, res, next) => {
 						  encodeURIComponent(populatedMessage.userPseudo || 'Utilisateur') +
 						  '&background=6366f1&color=fff',
 			},
-			// IMPORTANT : Inclure explicitement replyTo et replyToInfo
 			replyTo: populatedMessage.replyTo,
 			replyToInfo: populatedMessage.replyToInfo,
 		};
@@ -236,22 +266,15 @@ exports.sendMessage = async (req, res, next) => {
 		delete formattedMessage._id;
 		delete formattedMessage.__v;
 
-		console.log('🚀 Émission Socket.IO - Message formaté:');
-		console.log('- replyTo:', formattedMessage.replyTo);
-		console.log('- replyToInfo:', formattedMessage.replyToInfo);
-
-		// Émettre l'événement Socket.IO
 		const io = req.app.get('io');
 		io.to(`survey-${surveyId}`).emit('newMessage', formattedMessage);
-
-		console.log('📤 Événement newMessage émis');
 
 		res.status(201).json({
 			message: 'Message envoyé',
 			chatMessage: formattedMessage,
 		});
 	} catch (error) {
-		console.error('❌ Erreur sendMessage:', error);
+		console.error('Erreur sendMessage:', error);
 		res.status(500).json({ message: 'Erreur serveur', error: error.message });
 	}
 };
@@ -279,6 +302,19 @@ exports.toggleMessageLike = async (req, res, next) => {
 			return res.status(403).json({
 				message:
 					'Le sondage est clôturé. Les réactions sur le chat sont désactivées.',
+			});
+		}
+		const organizationId = await resolveSurveyOrganizationId(survey);
+		const entitlement = await authorizeAction({
+			action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
+			organizationId,
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+		});
+		if (!entitlement.allowed) {
+			return res.status(403).json({
+				code: entitlement.code,
+				message: entitlement.message,
 			});
 		}
 
@@ -361,60 +397,52 @@ exports.toggleMessageLike = async (req, res, next) => {
 exports.getChatStats = async (req, res, next) => {
 	try {
 		const surveyId = req.params.surveyId || req.query.surveyId;
-		const { type } = req.query; // <-- récupérer type depuis la query
+		const { type } = req.query;
 
 		if (!surveyId || !mongoose.Types.ObjectId.isValid(surveyId)) {
 			return res.status(400).json({ message: 'surveyId manquant ou invalide' });
 		}
 
-		const surveyModel = type === 'multiple' ? Survey_2 : Survey;
-		const survey = await surveyModel.findById(surveyId).lean();
+		const surveyObjectId = new mongoose.Types.ObjectId(surveyId);
+		const surveyModel = getSurveyModel(type);
+		const surveyModelName = getSurveyModelName(type);
+		const survey = await surveyModel
+			.findById(surveyObjectId)
+			.select('theme isClosed organizationId userId')
+			.lean();
 
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
 		}
 
-		// Compter les messages
-		const totalMessages = await ChatMessage.countDocuments({
-			surveyId,
-			surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
-		});
-
-		// Compter les utilisateurs actifs (distincts - ont posté au moins un message)
-		const activeUsersAgg = await ChatMessage.aggregate([
-			{
-				$match: {
-					surveyId: surveyId,
-					surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
-				},
-			},
-			{ $group: { _id: '$userId' } },
-			{ $count: 'total' },
-		]);
-		const activeUsers = activeUsersAgg[0]?.total || 0;
-
-		// Nombre d'utilisateurs connectés dans la room Socket.IO (en ligne)
-		let onlineUsersCount = 0;
+		const messageFilter = {
+			surveyId: surveyObjectId,
+			surveyModel: surveyModelName,
+		};
 		const io = req.app.get('io');
-		if (io) {
-			const roomName = `survey-${surveyId}`;
-			const presenceStore = io.chatPresence;
-			if (presenceStore && presenceStore.get(roomName)) {
-				onlineUsersCount = presenceStore.get(roomName).size;
-			} else {
-				const room = io.sockets.adapter.rooms.get(roomName);
-				onlineUsersCount = room ? room.size : 0;
-			}
-		}
 
-		// Dernier message
-		const lastMessage = await ChatMessage.findOne({
-			surveyId,
-			surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
-		})
-			.sort({ createdAt: -1 })
-			.populate('userId', 'pseudo')
-			.lean();
+		const [totalMessages, activeUsersAgg, onlineUsersCount, lastMessage] =
+			await Promise.all([
+				ChatMessage.countDocuments(messageFilter),
+				ChatMessage.aggregate([
+					{
+						$match: messageFilter,
+					},
+					{ $group: { _id: '$userId' } },
+					{ $count: 'total' },
+				]),
+				getOnlineUsersCount({
+					io,
+					survey,
+					surveyId: surveyObjectId,
+				}),
+				ChatMessage.findOne(messageFilter)
+					.select('createdAt userPseudo')
+					.sort({ createdAt: -1 })
+					.lean(),
+			]);
+
+		const activeUsers = activeUsersAgg[0]?.total || 0;
 
 		res.status(200).json({
 			totalMessages,
@@ -430,3 +458,4 @@ exports.getChatStats = async (req, res, next) => {
 		res.status(500).json({ message: 'Erreur serveur', error: error.message });
 	}
 };
+

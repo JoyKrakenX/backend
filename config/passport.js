@@ -10,12 +10,17 @@ const {
 	normalizeEmail,
 	isSupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
+const {
+	ensurePersonalOrganizationForUser,
+} = require('../services/organizationService');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 
 const jwt = require('jsonwebtoken');
 
 const resolveUserRole = (email) => {
 	const normalizedEmail = normalizeEmail(email);
 	if (!normalizedEmail) return 'user';
+	if (isBillingExemptEmail(normalizedEmail)) return 'user';
 
 	if (isSupportAdminEmail(normalizedEmail)) return 'admin';
 
@@ -52,6 +57,8 @@ passport.use(
 					user.role = resolvedRole;
 					await user.save();
 				}
+
+				await ensurePersonalOrganizationForUser(user);
 
 				if (user.pseudo) {
 					const token = jwt.sign(

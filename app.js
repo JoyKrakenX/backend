@@ -6,6 +6,7 @@ const express = require('express');
 const passport = require('passport');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const helmet = require('helmet');
 
 // ---------------------------
 // Routes
@@ -30,15 +31,39 @@ const supportChatRoutes = require('./routes/supportChat');
 const pushRoutes = require('./routes/push');
 const publicRoutes = require('./routes/public');
 const privacySettingsRoutes = require('./routes/privacySettings');
+const billingRoutes = require('./routes/billing');
+const organizationRoutes = require('./routes/organizations');
+const exportRoutes = require('./routes/exports');
+const { globalRateLimit } = require('./middlewares/securityRateLimit');
+const { ensurePlanCatalog } = require('./services/billing/planService');
+const { validateProductionSecrets } = require('./utils/securityStartup');
+
+validateProductionSecrets();
 
 const app = express();
+app.set('trust proxy', 1);
 
 // ---------------------------
 // CORS
 // ---------------------------
+const parseAllowedOrigins = () =>
+	String(process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '')
+		.split(',')
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+
+const allowedOrigins = parseAllowedOrigins();
+
 app.use(
 	cors({
-		origin: '*', // pour dev, tu peux restreindre à ton frontend en local ou ngrok
+		origin: (origin, callback) => {
+			if (!origin) return callback(null, true);
+			if (process.env.NODE_ENV !== 'production') return callback(null, true);
+			if (!allowedOrigins.length || allowedOrigins.includes(origin)) {
+				return callback(null, true);
+			}
+			return callback(new Error('CORS origin non autorisee'));
+		},
 		methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 		allowedHeaders: [
 			'Origin',
@@ -47,14 +72,40 @@ app.use(
 			'Accept',
 			'Content-Type',
 			'Authorization',
+			'X-Organization-Id',
 		],
+	}),
+);
+
+app.use(
+	helmet({
+		crossOriginResourcePolicy: { policy: 'cross-origin' },
+		contentSecurityPolicy: {
+			useDefaults: true,
+			directives: {
+				// Keep CSP strict while allowing external user avatars.
+				imgSrc: [
+					"'self'",
+					'data:',
+					'https://ui-avatars.com',
+					'https://*.googleusercontent.com',
+				],
+			},
+		},
 	}),
 );
 
 // ---------------------------
 // Body parser
 // ---------------------------
-app.use(express.json());
+app.use(
+	express.json({
+		limit: '2mb',
+		verify: (req, _res, buf) => {
+			req.rawBody = Buffer.from(buf);
+		},
+	}),
+);
 app.use(express.urlencoded({ extended: true }));
 
 // ---------------------------
@@ -68,12 +119,24 @@ require('./config/passport');
 // ---------------------------
 mongoose
 	.connect(process.env.MONGO_URI)
-	.then(() => console.log('Connexion à MongoDB réussie !'))
-	.catch(() => console.log('Connexion à MongoDB échouée !'));
+	.then(async () => {
+		console.log('Connexion a MongoDB reussie !');
+		await ensurePlanCatalog();
+	})
+	.catch((error) => {
+		console.log('Connexion a MongoDB echouee !');
+		console.error(error?.message || error);
+	});
 
 // ---------------------------
 // Routes API
 // ---------------------------
+app.use('/api', (req, res, next) => {
+	if (String(req.path || '').startsWith('/billing/webhooks/')) {
+		return next();
+	}
+	return globalRateLimit(req, res, next);
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', completeRoutes);
 app.use('/api/survey', surveyRoutes);
@@ -94,6 +157,9 @@ app.use('/api/support', supportRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/privacy', privacySettingsRoutes);
+app.use('/api/billing', billingRoutes);
+app.use('/api/organizations', organizationRoutes);
+app.use('/api/exports', exportRoutes);
 
 // ---------------------------
 // Uploads statiques
@@ -103,7 +169,6 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ---------------------------
 // Frontend statique + SPA catch-all
 // ---------------------------
-// Sert tout le dossier frontend
 app.use(
 	express.static(path.join(__dirname, '../frontend'), {
 		setHeaders: (res, filePath) => {
@@ -119,8 +184,6 @@ app.use(
 	}),
 );
 
-// Middleware catch-all pour toutes les routes non-API
-// Toujours après les routes API
 app.use((req, res, next) => {
 	if (req.path.startsWith('/api')) return next();
 	res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -128,3 +191,4 @@ app.use((req, res, next) => {
 });
 
 module.exports = app;
+

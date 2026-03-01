@@ -28,6 +28,14 @@ const opinionSchema = new mongoose.Schema({
 });
 
 opinionSchema.index(
+	{ userId: 1, surveyId: 1 },
+	{
+		name: 'userId_surveyId',
+		background: true,
+	}
+);
+
+opinionSchema.index(
 	{ surveyId: 1, userId: 1 },
 	{
 		unique: true,

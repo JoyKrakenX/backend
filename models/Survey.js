@@ -7,7 +7,7 @@ const {
 } = require('../utils/surveyStatus');
 
 const surveySchema = mongoose.Schema({
-	theme: { type: String, required: true, unique: true },
+	theme: { type: String, required: true },
 	contexte: { type: String },
 	question: { type: String, required: true },
 	explain: { type: Boolean, default: true },
@@ -18,8 +18,19 @@ const surveySchema = mongoose.Schema({
 	},
 	createdAt: { type: Date, default: Date.now },
 	userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+	organizationId: {
+		type: mongoose.Schema.Types.ObjectId,
+		ref: 'Organization',
+		default: null,
+		index: true,
+	},
 	isClosed: { type: Boolean, default: false },
 	endedAt: { type: Date, default: null },
 });
+
+surveySchema.index(
+	{ userId: 1, createdAt: -1 },
+	{ name: 'userId_createdAt' },
+);
 
 module.exports = mongoose.model('Survey', surveySchema);

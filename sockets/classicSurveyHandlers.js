@@ -7,6 +7,7 @@ const Survey = require('../models/Survey');
 const Survey_2 = require('../models/Survey_2');
 const Opinion = require('../models/Opinion');
 const Opinion_2 = require('../models/Opinion_2');
+const { canManageSurveyByOrganization } = require('../services/surveyAuthorizationService');
 
 const normalizeType = (value) => {
 	if (value === 'binary' || value === 'multiple') return value;
@@ -40,7 +41,6 @@ const extractSocketUser = (socket) => {
 
 		return {
 			id: String(decoded.id),
-			role: String(decoded.role || 'user'),
 		};
 	} catch (_error) {
 		return null;
@@ -62,7 +62,7 @@ const canJoinClassicRoom = async ({ surveyId, type, user }) => {
 
 	const { SurveyModel, OpinionModel } = resolveModelsByType(type);
 	const survey = await SurveyModel.findById(surveyId)
-		.select('userId explain')
+		.select('_id userId organizationId explain')
 		.lean();
 	if (!survey) {
 		return { allowed: false, message: 'Sondage introuvable.' };
@@ -76,8 +76,12 @@ const canJoinClassicRoom = async ({ surveyId, type, user }) => {
 	}
 
 	const isOwner = String(survey.userId) === String(user.id);
-	const isAdmin = user.role === 'admin';
-	if (isOwner || isAdmin) {
+	if (isOwner) {
+		return { allowed: true };
+	}
+
+	const canManage = await canManageSurveyByOrganization(survey, user.id);
+	if (canManage) {
 		return { allowed: true };
 	}
 

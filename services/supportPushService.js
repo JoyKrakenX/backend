@@ -4,6 +4,7 @@ const webPush = require('web-push');
 const SupportPushSubscription = require('../models/SupportPushSubscription');
 const User = require('../models/User');
 const { getSupportAdminEmails } = require('../utils/supportAdminAllowlist');
+const { isBillingExemptEmail } = require('./superAdminService');
 
 const CHANNELS = Object.freeze({
 	SUPPORT_QUEUE: 'support_queue',
@@ -601,7 +602,9 @@ const broadcastQueuePush = async ({
 
 	ensurePushReady();
 
-	const allowlistedEmails = getSupportAdminEmails();
+	const allowlistedEmails = getSupportAdminEmails().filter(
+		(email) => !isBillingExemptEmail(email),
+	);
 	if (!allowlistedEmails.length) {
 		return { sent: 0, failed: 0, skipped: true };
 	}

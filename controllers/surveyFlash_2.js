@@ -18,9 +18,11 @@ const {
 	buildLegacyOptionFields,
 } = require('../utils/multipleSurveyOptions');
 const { normalizeSurveyStatus } = require('../utils/surveyStatus');
-
-const canManageSurvey = (survey, req) =>
-	req.userRole === 'admin' || String(survey.userId) === String(req.userId);
+const { authorizeAction } = require('../services/billing/entitlementService');
+const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
+const { trackVote } = require('../services/billing/usageService');
+const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
+const { canManageSurveyByOrganization } = require('../services/surveyAuthorizationService');
 
 const formatOpinion = (opinion, userId) => {
 	const likeCount = (opinion.likes && opinion.likes.length) || 0;
@@ -84,7 +86,8 @@ exports.getState = async (req, res) => {
 				.lean(),
 		);
 
-		const canViewResults = hasParticipated || canManageSurvey(survey, req);
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		const canViewResults = hasParticipated || canManage;
 		const canVote = !survey.isClosed && !hasParticipated;
 		const normalizedSurvey = normalizeSurveyForPayload(survey);
 
@@ -127,6 +130,19 @@ exports.submitOpinion = async (req, res) => {
 				message: 'Le sondage est cloture, vous ne pouvez plus y repondre.',
 			});
 		}
+		const organizationId = await resolveSurveyOrganizationId(survey);
+		const entitlement = await authorizeAction({
+			action: ENTITLEMENT_ACTIONS.VOTE,
+			organizationId,
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+		});
+		if (!entitlement.allowed) {
+			return res.status(403).json({
+				code: entitlement.code,
+				message: entitlement.message,
+			});
+		}
 
 		const options = resolveSurveyOptions(survey);
 		if (!isChoiceAllowed(req.body.choice, options)) {
@@ -158,6 +174,16 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
+		await trackVote({
+			organizationId,
+			idempotencyKey: `vote:${String(opinion._id)}`,
+			meta: {
+				surveyId: String(survey._id),
+				type: 'multiple',
+				flash: true,
+				userId: String(req.userId),
+			},
+		});
 
 		const io = req.app.get('io');
 		const room = `flash-multiple-${survey._id}`;
@@ -202,6 +228,7 @@ exports.submitOpinion = async (req, res) => {
 			status: normalizeSurveyStatus(survey.status),
 			isClosed: Boolean(survey.isClosed),
 			ownerUserId: survey.userId,
+			organizationId: organizationId || survey.organizationId || null,
 			createdAt: survey.createdAt,
 			endedAt: survey.endedAt,
 			totalOpinions,
@@ -245,7 +272,7 @@ exports.getDetailedResults = async (req, res) => {
 				.lean(),
 		);
 
-		const allowAdminFilters = canManageSurvey(survey, req);
+		const allowAdminFilters = await canManageSurveyByOrganization(survey, req.userId);
 		const canViewResults = hasParticipated || allowAdminFilters;
 		if (!canViewResults) {
 			if (survey.isClosed) {
@@ -318,3 +345,5 @@ exports.getDetailedResults = async (req, res) => {
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
+
+

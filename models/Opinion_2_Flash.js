@@ -33,6 +33,14 @@ const opinion2FlashSchema = new mongoose.Schema({
 });
 
 opinion2FlashSchema.index(
+	{ userId: 1, surveyId: 1 },
+	{
+		name: 'userId_surveyId',
+		background: true,
+	},
+);
+
+opinion2FlashSchema.index(
 	{ surveyId: 1, userId: 1 },
 	{
 		unique: true,

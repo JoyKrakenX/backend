@@ -2,6 +2,7 @@
 
 const User = require('../models/User');
 const { normalizeEmail, isSupportAdminEmail } = require('../utils/supportAdminAllowlist');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 
 module.exports = async (req, res, next) => {
 	try {
@@ -15,9 +16,9 @@ module.exports = async (req, res, next) => {
 			email = normalizeEmail(dbUser?.email);
 		}
 
-		if (!isSupportAdminEmail(email)) {
+		if (isBillingExemptEmail(email) || !isSupportAdminEmail(email)) {
 			return res.status(403).json({
-				message: "Accès réservé à l'administrateur support autorisé.",
+				message: 'Acces reserve a l administrateur support autorise.',
 			});
 		}
 

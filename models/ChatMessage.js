@@ -67,7 +67,10 @@ const chatMessageSchema = new mongoose.Schema({
 });
 
 // Index pour les performances
-chatMessageSchema.index({ surveyId: 1, createdAt: -1 });
+chatMessageSchema.index(
+	{ surveyId: 1, surveyModel: 1, createdAt: -1 },
+	{ name: 'surveyId_surveyModel_createdAt' },
+);
 chatMessageSchema.index({ userId: 1 });
 chatMessageSchema.index({ createdAt: -1 });
 chatMessageSchema.index({ replyTo: 1 }); // Nouvel index pour optimiser les recherches de réponses

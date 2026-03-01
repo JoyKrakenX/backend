@@ -31,6 +31,14 @@ const {
 } = require('../services/supportPushService');
 const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
 const { normalizeSurveyStatus } = require('../utils/surveyStatus');
+const {
+	resolveActiveOrganizationContext,
+} = require('../services/organizationService');
+const { authorizeAction } = require('../services/billing/entitlementService');
+const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
+const { trackSurveyCreated, trackVote } = require('../services/billing/usageService');
+const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
+const { canManageSurveyByOrganization } = require('../services/surveyAuthorizationService');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -44,9 +52,6 @@ const getClassicRoom = (surveyId) => `classic-multiple-${String(surveyId)}`;
 
 const getMultipleOpinionModel = (survey) =>
 	survey && survey.explain === false ? Opinion2Flash : Opinion_2;
-
-const canManageSurvey = (survey, req) =>
-	req.userRole === 'admin' || String(survey?.userId) === String(req.userId);
 
 const normalizeSurveyForResponse = (survey) => {
 	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
@@ -119,6 +124,35 @@ const emitClassicMultipleOpinion = ({ io, survey, opinion }) => {
 
 exports.createSurvey = async (req, res) => {
 	try {
+		const organizationContext = await resolveActiveOrganizationContext({
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+			requestedOrganizationId:
+				req.headers['x-organization-id'] ||
+				req.headers['x-org-id'] ||
+				req.body?.organizationId,
+		});
+		if (!organizationContext.ok) {
+			return res.status(403).json({
+				code: organizationContext.code,
+				message: "Organisation active introuvable pour la creation du sondage.",
+			});
+		}
+
+		const entitlement = await authorizeAction({
+			action: ENTITLEMENT_ACTIONS.CREATE_SURVEY,
+			organizationId: organizationContext.organization._id,
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+			role: organizationContext.role,
+		});
+		if (!entitlement.allowed) {
+			return res.status(403).json({
+				code: entitlement.code,
+				message: entitlement.message,
+			});
+		}
+
 		delete req.body._id;
 
 		const theme = String(req.body.theme || '').trim();
@@ -151,9 +185,19 @@ exports.createSurvey = async (req, res) => {
 			options,
 			...buildLegacyOptionFields(options),
 			userId: req.userId,
+			organizationId: organizationContext.organization._id,
 		});
 
 		const savedSurvey = await survey.save();
+		await trackSurveyCreated({
+			organizationId: savedSurvey.organizationId,
+			idempotencyKey: `survey-create:${String(savedSurvey._id)}`,
+			meta: {
+				surveyId: String(savedSurvey._id),
+				type: 'multiple',
+				userId: String(req.userId),
+			},
+		});
 		const normalizedSurvey = normalizeSurveyForResponse(savedSurvey);
 
 		broadcastSurveyNewPush({
@@ -175,6 +219,7 @@ exports.createSurvey = async (req, res) => {
 			status: normalizeSurveyStatus(savedSurvey.status),
 			isClosed: Boolean(savedSurvey.isClosed),
 			ownerUserId: savedSurvey.userId,
+			organizationId: savedSurvey.organizationId || null,
 			createdAt: savedSurvey.createdAt,
 			endedAt: savedSurvey.endedAt,
 		});
@@ -236,7 +281,7 @@ exports.getState = async (req, res) => {
 				.select('_id')
 				.lean(),
 		);
-		const canManage = canManageSurvey(survey, req);
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		const canVote = !survey.isClosed && !hasParticipated;
 		const canViewResults = hasParticipated || canManage;
 		let message = '';
@@ -283,6 +328,20 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
+		const organizationId = await resolveSurveyOrganizationId(survey);
+		const entitlement = await authorizeAction({
+			action: ENTITLEMENT_ACTIONS.VOTE,
+			organizationId,
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+		});
+		if (!entitlement.allowed) {
+			return res.status(403).json({
+				code: entitlement.code,
+				message: entitlement.message,
+			});
+		}
+
 		const options = resolveSurveyOptions(survey);
 		if (!isChoiceAllowed(req.body.choice, options)) {
 			return res.status(400).json({ message: 'Reponse invalide' });
@@ -313,6 +372,15 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
+		await trackVote({
+			organizationId,
+			idempotencyKey: `vote:${String(opinion._id)}`,
+			meta: {
+				surveyId: String(survey._id),
+				type: 'multiple',
+				userId: String(req.userId),
+			},
+		});
 		const io = req.app.get('io');
 		const normalizedSurvey = normalizeSurveyForResponse(survey);
 		const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
@@ -338,6 +406,7 @@ exports.submitOpinion = async (req, res) => {
 			status: normalizeSurveyStatus(survey.status),
 			isClosed: Boolean(survey.isClosed),
 			ownerUserId: survey.userId,
+			organizationId: organizationId || survey.organizationId || null,
 			createdAt: survey.createdAt,
 			endedAt: survey.endedAt,
 			totalOpinions,
@@ -465,6 +534,7 @@ exports.closeSurvey = async (req, res) => {
 			});
 		}
 
+		const surveyOrganizationId = await resolveSurveyOrganizationId(survey);
 		emitSurveyFeedUpdate(req.app.get('io'), {
 			action: 'closed',
 			surveyId: survey._id,
@@ -473,6 +543,7 @@ exports.closeSurvey = async (req, res) => {
 			status: normalizeSurveyStatus(survey.status),
 			isClosed: true,
 			ownerUserId: survey.userId,
+			organizationId: surveyOrganizationId || survey.organizationId || null,
 			createdAt: survey.createdAt,
 			endedAt: survey.endedAt,
 			totalOpinions: finalTotalOpinions,
@@ -508,7 +579,7 @@ exports.getDetailedStats = async (req, res) => {
 				.select('_id')
 				.lean(),
 		);
-		const allowAdminFilters = canManageSurvey(survey, req);
+		const allowAdminFilters = await canManageSurveyByOrganization(survey, req.userId);
 		const canViewResults = hasParticipated || allowAdminFilters;
 		const canVote = !survey.isClosed && !hasParticipated;
 		if (!canViewResults) {

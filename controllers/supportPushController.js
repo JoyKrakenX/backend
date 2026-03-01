@@ -18,6 +18,7 @@ const {
 	normalizeEmail,
 	isSupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 
 const createUserError = (message, status = 400) => {
 	const error = new Error(message);
@@ -57,7 +58,7 @@ const resolveEffectiveIdentity = async (userId, fallbackRole, fallbackEmail) => 
 	if (!userId) {
 		let role = normalizeRole(fallbackRole);
 		const email = normalizeEmail(fallbackEmail);
-		const allowlisted = isSupportAdminEmail(email);
+		const allowlisted = !isBillingExemptEmail(email) && isSupportAdminEmail(email);
 		if (allowlisted && role !== 'support' && role !== 'admin') {
 			role = 'admin';
 		}
@@ -71,7 +72,7 @@ const resolveEffectiveIdentity = async (userId, fallbackRole, fallbackEmail) => 
 	const dbUser = await User.findById(userId).select('role email').lean();
 	let role = normalizeRole(dbUser?.role || fallbackRole);
 	const email = normalizeEmail(dbUser?.email || fallbackEmail);
-	const allowlisted = isSupportAdminEmail(email);
+	const allowlisted = !isBillingExemptEmail(email) && isSupportAdminEmail(email);
 	if (allowlisted && role !== 'support' && role !== 'admin') {
 		role = 'admin';
 	}

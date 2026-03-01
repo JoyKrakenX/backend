@@ -2,6 +2,10 @@
 
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const {
+	ensurePersonalOrganizationForUser,
+} = require('../services/organizationService');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 
 exports.updatePseudo = async (req, res) => {
   try {
@@ -66,12 +70,15 @@ exports.completeProfile = async (req, res) => {
     user.birthdate = birthdate;
     user.gender = gender;
     await user.save();
+    await ensurePersonalOrganizationForUser(user);
+    const effectiveRole = isBillingExemptEmail(user.email) ? 'user' : (user.role || 'user');
 
     const token = jwt.sign(
       {
         id: user._id,
         pseudo: user.pseudo,
         email: user.email,
+        role: effectiveRole,
       },
       process.env.JWT_SECRET,
       {
@@ -86,6 +93,7 @@ exports.completeProfile = async (req, res) => {
         id: user._id,
         pseudo: user.pseudo,
         email: user.email,
+        role: effectiveRole,
       },
     });
   } catch (error) {

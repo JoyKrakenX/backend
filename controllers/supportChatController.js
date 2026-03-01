@@ -7,6 +7,7 @@ const {
 	normalizeEmail,
 	isSupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 const { isSupportBusinessHours } = require('../utils/supportBusinessHours');
 
 const sanitizeText = (value, max = 4000) =>
@@ -59,7 +60,7 @@ const resolveEffectiveIdentity = async (req) => {
 	const dbUser = await User.findById(req.userId).select('role email').lean();
 	const role = dbUser?.role || req.userRole || 'user';
 	const email = normalizeEmail(dbUser?.email || req.userEmail || req.user?.email || '');
-	const allowlisted = isSupportAdminEmail(email);
+	const allowlisted = !isBillingExemptEmail(email) && isSupportAdminEmail(email);
 	const elevatedRole =
 		allowlisted && role !== 'support' && role !== 'admin' ? 'admin' : role;
 	return { role: elevatedRole, email, allowlisted };

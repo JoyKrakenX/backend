@@ -2,6 +2,7 @@
 
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
+const { isBillingExemptEmail } = require('../services/superAdminService');
 
 const extractToken = (req) => {
 	const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -28,22 +29,23 @@ module.exports = (req, res, next) => {
 		if (!decoded?.id) {
 			return res.status(401).json({ message: 'Token invalide.' });
 		}
+		const decodedEmail = decoded.email || null;
+		const effectiveRole = isBillingExemptEmail(decodedEmail) ? 'user' : (decoded.role || 'user');
 
 		req.user = {
 			id: String(decoded.id),
 			pseudo: decoded.pseudo || null,
-			email: decoded.email || null,
-			role: decoded.role || 'user',
+			email: decodedEmail,
+			role: effectiveRole,
 		};
 
 		req.userId = mongoose.Types.ObjectId.createFromHexString(String(decoded.id));
 		req.userPseudo = decoded.pseudo || null;
-		req.userRole = decoded.role || 'user';
-		req.userEmail = decoded.email || null;
+		req.userRole = effectiveRole;
+		req.userEmail = decodedEmail;
 
 		return next();
 	} catch (error) {
 		return res.status(401).json({ message: 'Session invalide ou expirée.' });
 	}
 };
-

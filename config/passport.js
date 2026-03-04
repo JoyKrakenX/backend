@@ -6,31 +6,11 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
 const User = require('../models/User');
 const {
-	parseEmailAllowlist,
-	normalizeEmail,
-	isSupportAdminEmail,
-} = require('../utils/supportAdminAllowlist');
-const {
 	ensurePersonalOrganizationForUser,
 } = require('../services/organizationService');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 
 const jwt = require('jsonwebtoken');
-
-const resolveUserRole = (email) => {
-	const normalizedEmail = normalizeEmail(email);
-	if (!normalizedEmail) return 'user';
-	if (isBillingExemptEmail(normalizedEmail)) return 'user';
-
-	if (isSupportAdminEmail(normalizedEmail)) return 'admin';
-
-	const adminEmails = parseEmailAllowlist(process.env.ADMIN_EMAILS);
-	const supportEmails = parseEmailAllowlist(process.env.SUPPORT_AGENT_EMAILS);
-
-	if (adminEmails.includes(normalizedEmail)) return 'admin';
-	if (supportEmails.includes(normalizedEmail)) return 'support';
-	return 'user';
-};
 
 passport.use(
 	new GoogleStrategy(
@@ -43,7 +23,10 @@ passport.use(
 			try {
 				let user = await User.findOne({ googleId: profile.id });
 				const email = profile.emails?.[0]?.value;
-				const resolvedRole = resolveUserRole(email);
+				const resolvedRole = resolveEffectiveRoleByEmail({
+					email,
+					fallbackRole: user?.role || 'user',
+				});
 
 				if (!user) {
 					user = await User.create({
@@ -61,12 +44,16 @@ passport.use(
 				await ensurePersonalOrganizationForUser(user);
 
 				if (user.pseudo) {
+					const effectiveRole = resolveEffectiveRoleByEmail({
+						email: user.email,
+						fallbackRole: user.role || 'user',
+					});
 					const token = jwt.sign(
 						{
 							id: user._id,
 							pseudo: user.pseudo,
 							email: user.email,
-							role: user.role || 'user',
+							role: effectiveRole,
 						},
 						process.env.JWT_SECRET,
 						{ expiresIn: process.env.JWT_EXPIRES_IN },
@@ -80,7 +67,10 @@ passport.use(
 						googleId: user.googleId,
 						email: user.email,
 						userId: user._id,
-						role: user.role || 'user',
+						role: resolveEffectiveRoleByEmail({
+							email: user.email,
+							fallbackRole: user.role || 'user',
+						}),
 					},
 					process.env.JWT_TEMP_SECRET,
 					{ expiresIn: process.env.JWT_TEMP_EXPIRES_IN },

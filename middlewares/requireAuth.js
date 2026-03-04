@@ -2,7 +2,7 @@
 
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 
 const extractToken = (req) => {
 	const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -30,7 +30,10 @@ module.exports = (req, res, next) => {
 			return res.status(401).json({ message: 'Token invalide.' });
 		}
 		const decodedEmail = decoded.email || null;
-		const effectiveRole = isBillingExemptEmail(decodedEmail) ? 'user' : (decoded.role || 'user');
+		const effectiveRole = resolveEffectiveRoleByEmail({
+			email: decodedEmail,
+			fallbackRole: decoded.role || 'user',
+		});
 
 		req.user = {
 			id: String(decoded.id),

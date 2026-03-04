@@ -9,6 +9,10 @@ const { canManageSurveyByOrganization } = require('../services/surveyAuthorizati
 const { authorizeAction } = require('../services/billing/entitlementService');
 const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
 const { trackExport } = require('../services/billing/usageService');
+const {
+	buildRegularVoterInsight,
+	buildUnavailableRegularVoterInsight,
+} = require('../services/exportVoterFrequencyService');
 
 const exportSchema = z.object({
 	type: z.enum(['binary', 'multiple']),
@@ -58,6 +62,21 @@ exports.requestSurveyExport = async (req, res) => {
 			parsed.data.requestId ||
 			`export-${survey._id}-${parsed.data.format}-${Date.now()}`;
 
+		let regularVotersInsight = buildUnavailableRegularVoterInsight({
+			threshold: process.env.EXPORT_REGULAR_VOTER_MIN_SURVEYS,
+		});
+		try {
+			regularVotersInsight = await buildRegularVoterInsight({
+				survey,
+				surveyType: parsed.data.type,
+			});
+		} catch (insightError) {
+			console.warn('export.regularVotersInsight:', insightError?.message || insightError);
+			regularVotersInsight = buildUnavailableRegularVoterInsight({
+				threshold: process.env.EXPORT_REGULAR_VOTER_MIN_SURVEYS,
+			});
+		}
+
 		await trackExport({
 			organizationId,
 			amount: 1,
@@ -76,6 +95,9 @@ exports.requestSurveyExport = async (req, res) => {
 			type: parsed.data.type,
 			format: parsed.data.format,
 			requestId,
+			insights: {
+				regularVoters: regularVotersInsight,
+			},
 		});
 	} catch (error) {
 		console.error('export.requestSurveyExport:', error);

@@ -5,9 +5,9 @@ const SupportMessage = require('../models/SupportMessage');
 const User = require('../models/User');
 const {
 	normalizeEmail,
-	isSupportAdminEmail,
+	isAnySupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 const { isSupportBusinessHours } = require('../utils/supportBusinessHours');
 
 const sanitizeText = (value, max = 4000) =>
@@ -50,20 +50,26 @@ const computePriorityScore = (category, openedAt = new Date()) => {
 
 const resolveEffectiveIdentity = async (req) => {
 	if (!req.userId) {
+		const email = normalizeEmail(req.userEmail || req.user?.email || '');
+		const role = resolveEffectiveRoleByEmail({
+			email,
+			fallbackRole: req.userRole || 'user',
+		});
 		return {
-			role: req.userRole || 'user',
-			email: normalizeEmail(req.userEmail || req.user?.email || ''),
-			allowlisted: false,
+			role,
+			email,
+			allowlisted: isAnySupportAdminEmail(email),
 		};
 	}
 
 	const dbUser = await User.findById(req.userId).select('role email').lean();
-	const role = dbUser?.role || req.userRole || 'user';
 	const email = normalizeEmail(dbUser?.email || req.userEmail || req.user?.email || '');
-	const allowlisted = !isBillingExemptEmail(email) && isSupportAdminEmail(email);
-	const elevatedRole =
-		allowlisted && role !== 'support' && role !== 'admin' ? 'admin' : role;
-	return { role: elevatedRole, email, allowlisted };
+	const allowlisted = isAnySupportAdminEmail(email);
+	const resolvedRole = resolveEffectiveRoleByEmail({
+		email,
+		fallbackRole: dbUser?.role || req.userRole || 'user',
+	});
+	return { role: resolvedRole, email, allowlisted };
 };
 
 const buildConversationFilterForUser = (req, role) => {

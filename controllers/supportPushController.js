@@ -16,9 +16,9 @@ const {
 const User = require('../models/User');
 const {
 	normalizeEmail,
-	isSupportAdminEmail,
+	isAnySupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 
 const createUserError = (message, status = 400) => {
 	const error = new Error(message);
@@ -55,27 +55,31 @@ const parseRequestedChannels = (body = {}, role, { useDefault = true } = {}) => 
 };
 
 const resolveEffectiveIdentity = async (userId, fallbackRole, fallbackEmail) => {
+	const normalizedEmail = normalizeEmail(fallbackEmail);
 	if (!userId) {
-		let role = normalizeRole(fallbackRole);
-		const email = normalizeEmail(fallbackEmail);
-		const allowlisted = !isBillingExemptEmail(email) && isSupportAdminEmail(email);
-		if (allowlisted && role !== 'support' && role !== 'admin') {
-			role = 'admin';
-		}
+		const role = normalizeRole(
+			resolveEffectiveRoleByEmail({
+				email: normalizedEmail,
+				fallbackRole: fallbackRole || 'user',
+			}),
+		);
+		const allowlisted = isAnySupportAdminEmail(normalizedEmail);
 		return {
 			role: role === 'support' || role === 'admin' ? (allowlisted ? role : 'user') : role,
-			email,
+			email: normalizedEmail,
 			allowlisted,
 		};
 	}
 
 	const dbUser = await User.findById(userId).select('role email').lean();
-	let role = normalizeRole(dbUser?.role || fallbackRole);
-	const email = normalizeEmail(dbUser?.email || fallbackEmail);
-	const allowlisted = !isBillingExemptEmail(email) && isSupportAdminEmail(email);
-	if (allowlisted && role !== 'support' && role !== 'admin') {
-		role = 'admin';
-	}
+	const email = normalizeEmail(dbUser?.email || normalizedEmail);
+	const role = normalizeRole(
+		resolveEffectiveRoleByEmail({
+			email,
+			fallbackRole: dbUser?.role || fallbackRole || 'user',
+		}),
+	);
+	const allowlisted = isAnySupportAdminEmail(email);
 	return {
 		role: role === 'support' || role === 'admin' ? (allowlisted ? role : 'user') : role,
 		email,

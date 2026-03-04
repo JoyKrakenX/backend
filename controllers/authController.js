@@ -5,7 +5,7 @@ const User = require('../models/User');
 const {
 	ensurePersonalOrganizationForUser,
 } = require('../services/organizationService');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 
 exports.updatePseudo = async (req, res) => {
   try {
@@ -71,7 +71,10 @@ exports.completeProfile = async (req, res) => {
     user.gender = gender;
     await user.save();
     await ensurePersonalOrganizationForUser(user);
-    const effectiveRole = isBillingExemptEmail(user.email) ? 'user' : (user.role || 'user');
+    const effectiveRole = resolveEffectiveRoleByEmail({
+      email: user.email,
+      fallbackRole: user.role || 'user',
+    });
 
     const token = jwt.sign(
       {

@@ -1,8 +1,11 @@
 /** @format */
 
 const User = require('../models/User');
-const { normalizeEmail, isSupportAdminEmail } = require('../utils/supportAdminAllowlist');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const {
+	normalizeEmail,
+	isAnySupportAdminEmail,
+} = require('../utils/supportAdminAllowlist');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 
 module.exports = async (req, res, next) => {
 	try {
@@ -16,13 +19,22 @@ module.exports = async (req, res, next) => {
 			email = normalizeEmail(dbUser?.email);
 		}
 
-		if (isBillingExemptEmail(email) || !isSupportAdminEmail(email)) {
+		const effectiveRole = resolveEffectiveRoleByEmail({
+			email,
+			fallbackRole: req.userRole || req.user?.role || 'user',
+		});
+		const isAgentRole = effectiveRole === 'support' || effectiveRole === 'admin';
+		if (!isAnySupportAdminEmail(email) || !isAgentRole) {
 			return res.status(403).json({
 				message: 'Acces reserve a l administrateur support autorise.',
 			});
 		}
 
 		req.userEmail = email;
+		req.userRole = effectiveRole;
+		if (req.user && typeof req.user === 'object') {
+			req.user.role = effectiveRole;
+		}
 		return next();
 	} catch (error) {
 		console.error('requireSupportAdminEmail:', error);

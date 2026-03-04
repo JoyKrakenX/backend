@@ -11,9 +11,9 @@ const {
 } = require('../services/supportPushService');
 const {
 	normalizeEmail,
-	isSupportAdminEmail,
+	isAnySupportAdminEmail,
 } = require('../utils/supportAdminAllowlist');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 const { isSupportBusinessHours } = require('../utils/supportBusinessHours');
 
 const categoryWeight = (category) => {
@@ -48,8 +48,7 @@ module.exports = (supportNamespace) => {
 	const isAllowlistedAgent = (user) =>
 		Boolean(user?.id) &&
 		isAgentRole(user?.role) &&
-		!isBillingExemptEmail(normalizeEmail(user?.email)) &&
-		isSupportAdminEmail(normalizeEmail(user?.email));
+		isAnySupportAdminEmail(normalizeEmail(user?.email));
 
 	const updateAgentState = (userId, socketId, role) => {
 		const state = agents.get(userId) || {
@@ -224,14 +223,12 @@ module.exports = (supportNamespace) => {
 				}
 			}
 
-			if (
-				!isBillingExemptEmail(resolvedEmail) &&
-				isSupportAdminEmail(resolvedEmail)
-			) {
-				if (!isAgentRole(resolvedRole)) {
-					resolvedRole = 'admin';
-				}
-			} else if (isAgentRole(resolvedRole)) {
+			resolvedRole = resolveEffectiveRoleByEmail({
+				email: resolvedEmail,
+				fallbackRole: resolvedRole,
+			});
+
+			if (!isAnySupportAdminEmail(resolvedEmail) && isAgentRole(resolvedRole)) {
 				resolvedRole = 'user';
 			}
 

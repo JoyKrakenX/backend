@@ -14,7 +14,7 @@ const { buildFrontendUrl } = require('../utils/publicUrls');
 const {
 	ensurePersonalOrganizationForUser,
 } = require('../services/organizationService');
-const { isBillingExemptEmail } = require('../services/superAdminService');
+const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
 
 router.get(
 	'/google',
@@ -66,7 +66,10 @@ router.get('/me', auth, async (req, res, next) => {
 			email: user.email,
 			name: user.name || null,
 			picture: user.picture || null,
-			role: isBillingExemptEmail(user.email) ? 'user' : (user.role || 'user'),
+			role: resolveEffectiveRoleByEmail({
+				email: user.email,
+				fallbackRole: user.role || 'user',
+			}),
 			defaultOrganizationId: user.defaultOrganizationId || null,
 		});
 	} catch (err) {

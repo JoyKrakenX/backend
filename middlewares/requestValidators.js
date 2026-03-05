@@ -67,11 +67,13 @@ const createMultipleSurveySchema = createBinarySurveySchema
 const binaryVoteSchema = z.object({
 	answer: z.boolean(),
 	reason: z.string().trim().max(2000).optional(),
+	turnstileToken: z.string().trim().min(1).max(4096).optional(),
 });
 
 const multipleVoteSchema = z.object({
 	choice: z.string().trim().min(1).max(280),
 	reason: z.string().trim().max(2000).optional(),
+	turnstileToken: z.string().trim().min(1).max(4096).optional(),
 });
 
 const chatSendSchema = z.object({

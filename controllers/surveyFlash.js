@@ -15,6 +15,15 @@ const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
 const { trackVote } = require('../services/billing/usageService');
 const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
 const { canManageSurveyByOrganization } = require('../services/surveyAuthorizationService');
+const {
+	evaluateFraudDecision,
+	buildOpinionFraudFields,
+} = require('../services/fraud/fraudDecisionService');
+const { logFraudDecision } = require('../services/fraud/fraudDecisionLogService');
+const {
+	buildStatusFilter,
+	getIntegritySnapshotForSurvey,
+} = require('../services/fraud/opinionFilterService');
 
 const sanitizeSurveyForClient = (survey) => {
 	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
@@ -52,10 +61,11 @@ const formatOpinion = (opinion, userId) => {
 	};
 };
 
-async function buildBinaryCounts(surveyId) {
+async function buildBinaryCounts(surveyId, mode = 'clean') {
+	const statusFilter = buildStatusFilter(mode);
 	const [yes, no] = await Promise.all([
-		OpinionFlash.countDocuments({ surveyId, answer: true }),
-		OpinionFlash.countDocuments({ surveyId, answer: false }),
+		OpinionFlash.countDocuments({ surveyId, answer: true, ...statusFilter }),
+		OpinionFlash.countDocuments({ surveyId, answer: false, ...statusFilter }),
 	]);
 
 	return {
@@ -164,12 +174,53 @@ exports.submitOpinion = async (req, res) => {
 		const reason =
 			typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
 
+		const fraudDecision = await evaluateFraudDecision({
+			actionType: 'vote',
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: 'binary_flash',
+			reason,
+			identity: req.riskIdentity || {},
+			turnstileToken: req.body.turnstileToken || null,
+			challengeToken:
+				req?.riskIdentity?.challengeToken ||
+				String(req.headers?.['x-fraud-challenge-token'] || '').trim() ||
+				null,
+			opinionModel: 'Opinion_Flash',
+		});
+
+		if (fraudDecision.kind === 'challenge') {
+			return res.status(fraudDecision.httpStatus || 428).json({
+				code: fraudDecision.code,
+				message: fraudDecision.message,
+				challengeType: fraudDecision.challengeType,
+				challenge:
+					fraudDecision.challenge || {
+						type: fraudDecision.challengeType,
+						turnstile: fraudDecision.turnstile || null,
+						otp: fraudDecision.otp || null,
+					},
+				otp: fraudDecision.otp || null,
+			});
+		}
+
+		if (fraudDecision.decision === 'blocked') {
+			return res.status(fraudDecision.httpStatus || 403).json({
+				code: fraudDecision.code || 'FRAUD_BLOCKED',
+				message: fraudDecision.message || 'Vote bloque pour risque eleve.',
+			});
+		}
+
 		const opinion = new OpinionFlash({
 			answer: req.body.answer,
 			reason: reason || undefined,
 			surveyId: survey._id,
 			userId: req.userId,
 			userPseudo: req.userPseudo,
+			...buildOpinionFraudFields({
+				result: fraudDecision,
+				identity: req.riskIdentity || {},
+			}),
 		});
 
 		await opinion.save();
@@ -227,9 +278,12 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		res.status(201).json({
-			message: 'Opinion enregistrée !',
+			message: 'Opinion enregistree !',
 			hasParticipated: true,
 			canVote: false,
+			canViewResults: true,
+			voteStatus: opinion.fraudStatus,
+			fraudReview: opinion.fraudStatus === 'quarantined',
 		});
 	} catch (error) {
 		if (error && error.code === 11000) {
@@ -279,9 +333,17 @@ exports.getDetailedResults = async (req, res) => {
 				.json({ message: 'Votez pour accéder aux résultats en temps réel.' });
 		}
 
-		const opinions = await OpinionFlash.find({ surveyId: survey._id })
+		const cleanFilter = buildStatusFilter('clean');
+		const opinions = await OpinionFlash.find({
+			surveyId: survey._id,
+			...cleanFilter,
+		})
 			.sort({ createdAt: -1 })
 			.lean();
+		const integrity =
+			allowAdminFilters ?
+				await getIntegritySnapshotForSurvey(OpinionFlash, survey._id)
+			:	null;
 		let adminProfilesByUserId = null;
 
 		if (allowAdminFilters) {
@@ -326,6 +388,7 @@ exports.getDetailedResults = async (req, res) => {
 				demographicFiltersAvailable: allowAdminFilters,
 				demographicFilterMode: 'age_gender',
 			},
+			integrity,
 			opinions: enrichedOpinions,
 		});
 	} catch (error) {
@@ -333,4 +396,204 @@ exports.getDetailedResults = async (req, res) => {
 		res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
+
+exports.getIntegrity = async (req, res) => {
+	try {
+		const survey = await Survey.findById(req.params.id)
+			.select('explain userId organizationId')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+		if (survey.explain !== false) {
+			return res.status(400).json({ message: "Ce sondage n'est pas un sondage Flash." });
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({ message: 'Acces admin requis.' });
+		}
+
+		const integrity = await getIntegritySnapshotForSurvey(OpinionFlash, survey._id);
+		return res.status(200).json({
+			surveyId: String(survey._id),
+			type: 'binary',
+			explain: false,
+			...integrity,
+		});
+	} catch (error) {
+		console.error('surveyFlash.getIntegrity error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.getQuarantineQueue = async (req, res) => {
+	try {
+		const survey = await Survey.findById(req.params.id)
+			.select('explain userId organizationId')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+		if (survey.explain !== false) {
+			return res.status(400).json({ message: "Ce sondage n'est pas un sondage Flash." });
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({ message: 'Acces admin requis.' });
+		}
+
+		const limit = Math.min(
+			100,
+			Math.max(1, Number.parseInt(req.query?.limit || '50', 10)),
+		);
+		const page = Math.max(1, Number.parseInt(req.query?.page || '1', 10));
+		const skip = (page - 1) * limit;
+		const statusFilterRaw = String(req.query?.status || '').trim().toLowerCase();
+		const allowedStatuses = ['quarantined', 'confirmed_fraud', 'all'];
+		const selectedStatus = allowedStatuses.includes(statusFilterRaw) ?
+				statusFilterRaw
+			:	'quarantined';
+		const queueStatusFilter =
+			selectedStatus === 'all' ?
+				{ $in: ['quarantined', 'confirmed_fraud'] }
+			:	selectedStatus;
+
+		const [items, total] = await Promise.all([
+			OpinionFlash.find({ surveyId: survey._id, fraudStatus: queueStatusFilter })
+				.select(
+					'_id answer reason userPseudo userId createdAt fraudStatus fraudScore fraudReasons challengeType',
+				)
+				.sort({ createdAt: -1 })
+				.skip(skip)
+				.limit(limit)
+				.lean(),
+			OpinionFlash.countDocuments({
+				surveyId: survey._id,
+				fraudStatus: queueStatusFilter,
+			}),
+		]);
+
+		return res.status(200).json({
+			surveyId: String(survey._id),
+			status: selectedStatus,
+			total,
+			page,
+			limit,
+			items,
+		});
+	} catch (error) {
+		console.error('surveyFlash.getQuarantineQueue error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.reviewQuarantineOpinion = async (req, res) => {
+	try {
+		const action = String(req.body?.action || '').trim().toLowerCase();
+		if (!['release', 'confirm_fraud'].includes(action)) {
+			return res.status(400).json({ message: 'Action invalide.' });
+		}
+
+		const survey = await Survey.findById(req.params.id)
+			.select('explain userId organizationId isClosed status createdAt endedAt')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+		if (survey.explain !== false) {
+			return res.status(400).json({ message: "Ce sondage n'est pas un sondage Flash." });
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({ message: 'Acces admin requis.' });
+		}
+
+		const opinion = await OpinionFlash.findOne({
+			_id: req.params.opinionId,
+			surveyId: survey._id,
+		});
+		if (!opinion) {
+			return res.status(404).json({ message: 'Opinion introuvable.' });
+		}
+
+		if (action === 'release') {
+			opinion.fraudStatus = 'released';
+			opinion.fraudReasons = [
+				...new Set([...(opinion.fraudReasons || []), 'ADMIN_RELEASED']),
+			];
+		} else {
+			opinion.fraudStatus = 'confirmed_fraud';
+			opinion.fraudReasons = [
+				...new Set([...(opinion.fraudReasons || []), 'ADMIN_CONFIRMED_FRAUD']),
+			];
+		}
+		opinion.reviewedBy = req.userId;
+		opinion.reviewedAt = new Date();
+		await opinion.save();
+		await logFraudDecision({
+			event: 'quarantine_review',
+			decision: action === 'release' ? 'released' : 'confirmed_fraud',
+			actionType: 'review',
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: 'binary_flash',
+			opinionModel: OpinionFlash.modelName,
+			ipHash: opinion.ipHash || null,
+			deviceHash: opinion.deviceHash || null,
+			riskScore: Number(opinion.fraudScore || 0),
+			reasons: [...new Set([...(opinion.fraudReasons || []), 'ADMIN_REVIEW'])],
+			challengeType: String(opinion.challengeType || 'none'),
+			meta: {
+				action,
+				opinionId: String(opinion._id),
+				reviewedStatus: opinion.fraudStatus,
+			},
+		});
+
+		const countsPayload = await buildBinaryCounts(survey._id, 'clean');
+		const io = req.app.get('io');
+		io.to(`flash-binary-${survey._id}`).emit('flash:counts', {
+			surveyId: String(survey._id),
+			type: 'binary',
+			totalOpinions: countsPayload.totalOpinions,
+			counts: countsPayload.counts,
+			isClosed: Boolean(survey.isClosed),
+		});
+
+		const organizationId = await resolveSurveyOrganizationId(survey);
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'vote',
+			surveyId: survey._id,
+			type: 'binary',
+			explain: survey.explain,
+			status: normalizeSurveyStatus(survey.status),
+			isClosed: Boolean(survey.isClosed),
+			ownerUserId: survey.userId,
+			organizationId: organizationId || survey.organizationId || null,
+			createdAt: survey.createdAt,
+			endedAt: survey.endedAt,
+			totalOpinions: countsPayload.totalOpinions,
+			occurredAt: new Date(),
+		});
+
+		const integrity = await getIntegritySnapshotForSurvey(OpinionFlash, survey._id);
+		return res.status(200).json({
+			message:
+				action === 'release' ?
+					'Opinion liberee et reintegree.'
+				:	'Opinion confirmee comme fraude.',
+			opinionId: String(opinion._id),
+			status: opinion.fraudStatus,
+			integrity,
+		});
+	} catch (error) {
+		console.error('surveyFlash.reviewQuarantineOpinion error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+
 

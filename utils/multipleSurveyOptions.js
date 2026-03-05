@@ -166,7 +166,12 @@ const buildCountsMapFromOpinions = (opinions = [], optionKeys = []) => {
 	return counts;
 };
 
-const aggregateCountsByOptionKeys = async (OpinionModel, surveyId, optionKeys = []) => {
+const aggregateCountsByOptionKeys = async (
+	OpinionModel,
+	surveyId,
+	optionKeys = [],
+	extraMatch = {},
+) => {
 	const counts = optionKeys.reduce((accumulator, key) => {
 		accumulator[key] = 0;
 		return accumulator;
@@ -177,7 +182,12 @@ const aggregateCountsByOptionKeys = async (OpinionModel, surveyId, optionKeys = 
 	}
 
 	const aggregated = await OpinionModel.aggregate([
-		{ $match: { surveyId } },
+		{
+			$match: {
+				surveyId,
+				...(extraMatch || {}),
+			},
+		},
 		{ $group: { _id: '$answer', total: { $sum: 1 } } },
 	]);
 
@@ -215,4 +225,3 @@ module.exports = {
 	buildCountsMapFromOpinions,
 	aggregateCountsByOptionKeys,
 };
-

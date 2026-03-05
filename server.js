@@ -11,6 +11,7 @@ const classicSurveyHandlers = require('./sockets/classicSurveyHandlers');
 const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
 const { getRedisClient, getRedisSubscriber } = require('./services/redisService');
 const { registerBillingLifecycleJob } = require('./services/billing/billingLifecycleJob');
+const { registerFraudGraphJob } = require('./services/fraud/fraudGraphJobService');
 
 const normalizePort = (val) => {
 	const port = parseInt(val, 10);
@@ -85,6 +86,7 @@ server.on('listening', () => {
 const start = async () => {
 	await configureSocketAdapter();
 	registerBillingLifecycleJob();
+	registerFraudGraphJob();
 	server.listen(port);
 };
 

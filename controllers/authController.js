@@ -1,106 +1,146 @@
-/** @format */
+﻿/** @format */
 
 const jwt = require('jsonwebtoken');
+
 const User = require('../models/User');
 const {
 	ensurePersonalOrganizationForUser,
 } = require('../services/organizationService');
 const { resolveEffectiveRoleByEmail } = require('../utils/effectiveRoleResolver');
+const { evaluateFraudDecision } = require('../services/fraud/fraudDecisionService');
 
 exports.updatePseudo = async (req, res) => {
-  try {
-    const userId = req.userId;
-    const pseudo = String(req.body?.pseudo || '').trim();
+	try {
+		const userId = req.userId;
+		const pseudo = String(req.body?.pseudo || '').trim();
 
-    if (!pseudo || pseudo.length < 3 || pseudo.length > 32) {
-      return res.status(400).json({ message: 'Pseudo invalide.' });
-    }
+		if (!pseudo || pseudo.length < 3 || pseudo.length > 32) {
+			return res.status(400).json({ message: 'Pseudo invalide.' });
+		}
 
-    const existing = await User.findOne({ pseudo });
-    if (existing && String(existing._id) !== String(userId)) {
-      return res.status(409).json({ message: 'Ce pseudo est déjà utilisé.' });
-    }
+		const existing = await User.findOne({ pseudo });
+		if (existing && String(existing._id) !== String(userId)) {
+			return res.status(409).json({ message: 'Ce pseudo est deja utilise.' });
+		}
 
-    const user = await User.findByIdAndUpdate(userId, { pseudo }, { new: true });
-    if (!user) {
-      return res.status(404).json({ message: 'Utilisateur introuvable.' });
-    }
+		const user = await User.findByIdAndUpdate(userId, { pseudo }, { new: true });
+		if (!user) {
+			return res.status(404).json({ message: 'Utilisateur introuvable.' });
+		}
 
-    return res.json({ pseudo: user.pseudo });
-  } catch (error) {
-    console.error('Erreur updatePseudo:', error);
-    return res.status(500).json({ message: 'Erreur serveur.' });
-  }
+		return res.json({ pseudo: user.pseudo });
+	} catch (error) {
+		console.error('Erreur updatePseudo:', error);
+		return res.status(500).json({ message: 'Erreur serveur.' });
+	}
 };
 
 exports.completeProfile = async (req, res) => {
-  try {
-    const { tempToken, pseudo, birthdate, gender } = req.body || {};
+	try {
+		const { tempToken, pseudo, birthdate, gender, turnstileToken } = req.body || {};
 
-    if (!tempToken) {
-      return res.status(400).json({ message: 'Token non fourni.' });
-    }
+		if (!tempToken) {
+			return res.status(400).json({ message: 'Token non fourni.' });
+		}
 
-    if (!pseudo || !birthdate || !gender) {
-      return res.status(400).json({ message: 'Tous les champs sont requis.' });
-    }
+		if (!pseudo || !birthdate || !gender) {
+			return res.status(400).json({ message: 'Tous les champs sont requis.' });
+		}
 
-    let decoded;
-    try {
-      decoded = jwt.verify(String(tempToken), process.env.JWT_TEMP_SECRET);
-    } catch (_error) {
-      return res.status(401).json({ message: 'Token temporaire invalide ou expiré.' });
-    }
+		let decoded;
+		try {
+			decoded = jwt.verify(String(tempToken), process.env.JWT_TEMP_SECRET);
+		} catch (_error) {
+			return res.status(401).json({ message: 'Token temporaire invalide ou expire.' });
+		}
 
-    const user =
-      (await User.findById(decoded.userId)) ||
-      (await User.findOne({ googleId: decoded.googleId }));
+		const user =
+			(await User.findById(decoded.userId)) ||
+			(await User.findOne({ googleId: decoded.googleId }));
 
-    if (!user) {
-      return res.status(404).json({ message: 'Utilisateur introuvable.' });
-    }
+		if (!user) {
+			return res.status(404).json({ message: 'Utilisateur introuvable.' });
+		}
 
-    const normalizedPseudo = String(pseudo || '').trim();
-    const exists = await User.findOne({ pseudo: normalizedPseudo });
-    if (exists && String(exists._id) !== String(user._id)) {
-      return res.status(409).json({ message: 'Ce pseudo est déjà utilisé.' });
-    }
+		const normalizedPseudo = String(pseudo || '').trim();
+		const exists = await User.findOne({ pseudo: normalizedPseudo });
+		if (exists && String(exists._id) !== String(user._id)) {
+			return res.status(409).json({ message: 'Ce pseudo est deja utilise.' });
+		}
 
-    user.pseudo = normalizedPseudo;
-    user.birthdate = birthdate;
-    user.gender = gender;
-    await user.save();
-    await ensurePersonalOrganizationForUser(user);
-    const effectiveRole = resolveEffectiveRoleByEmail({
-      email: user.email,
-      fallbackRole: user.role || 'user',
-    });
+		const fraudDecision = await evaluateFraudDecision({
+			actionType: 'complete_profile',
+			userId: user._id,
+			surveyId: null,
+			surveyType: 'unknown',
+			reason: `${normalizedPseudo}|${birthdate}|${gender}`,
+			identity: req.riskIdentity || {},
+			turnstileToken: turnstileToken || null,
+			challengeToken:
+				req?.riskIdentity?.challengeToken ||
+				String(req.headers?.['x-fraud-challenge-token'] || '').trim() ||
+				null,
+			opinionModel: null,
+		});
 
-    const token = jwt.sign(
-      {
-        id: user._id,
-        pseudo: user.pseudo,
-        email: user.email,
-        role: effectiveRole,
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: process.env.JWT_EXPIRES_IN,
-      },
-    );
+		if (fraudDecision.kind === 'challenge') {
+			return res.status(fraudDecision.httpStatus || 428).json({
+				code: fraudDecision.code,
+				message: fraudDecision.message,
+				challengeType: fraudDecision.challengeType,
+				challenge:
+					fraudDecision.challenge || {
+						type: fraudDecision.challengeType,
+						turnstile: fraudDecision.turnstile || null,
+						otp: fraudDecision.otp || null,
+					},
+				otp: fraudDecision.otp || null,
+			});
+		}
 
-    return res.status(200).json({
-      message: 'Profil complété avec succès.',
-      token,
-      user: {
-        id: user._id,
-        pseudo: user.pseudo,
-        email: user.email,
-        role: effectiveRole,
-      },
-    });
-  } catch (error) {
-    console.error('Erreur completeProfile:', error);
-    return res.status(500).json({ message: 'Erreur interne du serveur.' });
-  }
+		if (fraudDecision.decision === 'blocked') {
+			return res.status(403).json({
+				code: fraudDecision.code || 'FRAUD_BLOCKED',
+				message: fraudDecision.message || 'Inscription bloquee pour risque eleve.',
+			});
+		}
+
+		user.pseudo = normalizedPseudo;
+		user.birthdate = birthdate;
+		user.gender = gender;
+		await user.save();
+		await ensurePersonalOrganizationForUser(user);
+		const effectiveRole = resolveEffectiveRoleByEmail({
+			email: user.email,
+			fallbackRole: user.role || 'user',
+		});
+
+		const token = jwt.sign(
+			{
+				id: user._id,
+				pseudo: user.pseudo,
+				email: user.email,
+				role: effectiveRole,
+			},
+			process.env.JWT_SECRET,
+			{
+				expiresIn: process.env.JWT_EXPIRES_IN,
+			},
+		);
+
+		return res.status(200).json({
+			message: 'Profil complete avec succes.',
+			token,
+			profileStatus: 'accepted',
+			user: {
+				id: user._id,
+				pseudo: user.pseudo,
+				email: user.email,
+				role: effectiveRole,
+			},
+		});
+	} catch (error) {
+		console.error('Erreur completeProfile:', error);
+		return res.status(500).json({ message: 'Erreur interne du serveur.' });
+	}
 };

@@ -7,6 +7,7 @@ const passport = require('passport');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
 
 // ---------------------------
 // Routes
@@ -34,9 +35,11 @@ const privacySettingsRoutes = require('./routes/privacySettings');
 const billingRoutes = require('./routes/billing');
 const organizationRoutes = require('./routes/organizations');
 const exportRoutes = require('./routes/exports');
+const fraudRoutes = require('./routes/fraud');
 const { globalRateLimit } = require('./middlewares/securityRateLimit');
 const { ensurePlanCatalog } = require('./services/billing/planService');
 const { validateProductionSecrets } = require('./utils/securityStartup');
+const riskIdentity = require('./middlewares/riskIdentity');
 
 validateProductionSecrets();
 
@@ -73,6 +76,8 @@ app.use(
 			'Content-Type',
 			'Authorization',
 			'X-Organization-Id',
+			'X-Fraud-Challenge-Token',
+			'X-Temp-Token',
 		],
 	}),
 );
@@ -107,6 +112,14 @@ app.use(
 	}),
 );
 app.use(express.urlencoded({ extended: true }));
+const cookieSecret =
+	String(
+		process.env.FRAUD_DEVICE_COOKIE_SECRET ||
+			process.env.FRAUD_DEVICE_HASH_SECRET ||
+			'',
+	).trim() || undefined;
+app.use(cookieParser(cookieSecret));
+app.use(riskIdentity);
 
 // ---------------------------
 // Passport
@@ -160,6 +173,7 @@ app.use('/api/privacy', privacySettingsRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/organizations', organizationRoutes);
 app.use('/api/exports', exportRoutes);
+app.use('/api/fraud', fraudRoutes);
 
 // ---------------------------
 // Uploads statiques

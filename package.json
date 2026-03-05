@@ -15,6 +15,9 @@
     "data:purge:execute": "node scripts/purge-environment-data.js --execute --scope full --keep-allowlisted-admins --target-db test --confirm CLEAN_TEST_DATA",
     "data:restore": "node scripts/restore-environment-backup.js --manifest",
     "billing:migrate:schema": "node scripts/migrate-billing-schema.js",
+    "fraud:migrate:dry-run": "node scripts/migrate-fraud-fields-and-indexes.js --dry-run",
+    "fraud:migrate:execute": "node scripts/migrate-fraud-fields-and-indexes.js --execute",
+    "fraud:graph:run": "node scripts/run-fraud-graph-job.js",
     "frontend:audit:js-sources": "node ../scripts/audit-frontend-js-sources.mjs",
     "audit:billing-exempt-memberships": "node scripts/audit-billing-exempt-memberships.js"
   },
@@ -30,6 +33,8 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
     "fedapay": "^1.2.5",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.0",
     "jsonwebtoken": "^9.0.2",
@@ -44,6 +49,7 @@
     "sharp": "^0.34.5",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.3",
+    "ua-parser-js": "^2.0.9",
     "uuid": "^13.0.0",
     "web-push": "^3.6.7",
     "zod": "^4.3.6"

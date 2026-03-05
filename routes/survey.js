@@ -28,6 +28,14 @@ router.get('/:id/state', auth, surveyCtrl.getState);
 router.get('/:id/results', auth, surveyCtrl.getFlashStats);
 
 router.get('/:id/detailed-results', auth, surveyCtrl.getDetailedStats);
+router.get('/:id/integrity', sensitiveRateLimit, auth, surveyCtrl.getIntegrity);
+router.get('/:id/quarantine', sensitiveRateLimit, auth, surveyCtrl.getQuarantineQueue);
+router.post(
+	'/:id/quarantine/:opinionId/review',
+	sensitiveRateLimit,
+	auth,
+	surveyCtrl.reviewQuarantineOpinion,
+);
 
 router.post(
 	'/:id/answer',

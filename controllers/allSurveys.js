@@ -10,6 +10,7 @@ const {
 	normalizeSurveyStatus,
 	isSurveyPublic,
 } = require('../utils/surveyStatus');
+const { aggregateCountBySurvey } = require('../services/fraud/opinionFilterService');
 
 const DEFAULT_ALL_SURVEYS_MAX_ITEMS = 500;
 const ALL_SURVEYS_MIN_ITEMS = 50;
@@ -37,24 +38,8 @@ const settledValueOr = (result, fallback) =>
 const toSurveyIds = (surveys) =>
 	Array.isArray(surveys) ? surveys.map((survey) => survey?._id).filter(Boolean) : [];
 
-const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) => {
-	if (!surveyIds.length) return new Map();
-	const rows = await OpinionModel.aggregate([
-		{
-			$match: {
-				surveyId: { $in: surveyIds },
-			},
-		},
-		{
-			$group: {
-				_id: '$surveyId',
-				count: { $sum: 1 },
-			},
-		},
-	]);
-
-	return new Map(rows.map((row) => [String(row._id), Number(row.count) || 0]));
-};
+const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) =>
+	aggregateCountBySurvey(OpinionModel, surveyIds, 'clean');
 
 const distinctSurveyParticipation = async (
 	OpinionModel,

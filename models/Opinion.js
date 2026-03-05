@@ -20,6 +20,32 @@ const opinionSchema = new mongoose.Schema({
 	},
 
 	userPseudo: { type: String, required: true },
+	fraudStatus: {
+		type: String,
+		enum: ['accepted', 'quarantined', 'released', 'confirmed_fraud'],
+		default: 'accepted',
+		index: true,
+	},
+	fraudScore: { type: Number, default: 0, min: 0, max: 100 },
+	fraudReasons: { type: [String], default: [] },
+	antiFraudVersion: { type: Number, default: 1 },
+	ipHash: { type: String, default: null, index: true },
+	deviceHash: { type: String, default: null, index: true },
+	reasonHash: { type: String, default: null },
+	ipRiskProvider: {
+		type: String,
+		enum: ['ipqs', 'none'],
+		default: 'none',
+	},
+	ipRiskScore: { type: Number, default: 0, min: 0, max: 100 },
+	captchaVerified: { type: Boolean, default: false },
+	challengeType: {
+		type: String,
+		enum: ['none', 'turnstile', 'email_otp'],
+		default: 'none',
+	},
+	reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+	reviewedAt: { type: Date, default: null },
 
 	createdAt: { type: Date, default: Date.now },
 
@@ -42,6 +68,36 @@ opinionSchema.index(
 		name: 'unique_opinion_per_user_per_survey',
 		background: true, // Crée l'index en arrière-plan pour ne pas bloquer
 	}
+);
+opinionSchema.index(
+	{ surveyId: 1, fraudStatus: 1, createdAt: -1 },
+	{
+		name: 'surveyId_fraudStatus_createdAt',
+		background: true,
+	},
+);
+opinionSchema.index(
+	{ userId: 1, createdAt: -1 },
+	{
+		name: 'userId_createdAt_fraud',
+		background: true,
+	},
+);
+opinionSchema.index(
+	{ ipHash: 1, createdAt: -1 },
+	{
+		name: 'ipHash_createdAt_fraud',
+		background: true,
+		sparse: true,
+	},
+);
+opinionSchema.index(
+	{ deviceHash: 1, createdAt: -1 },
+	{
+		name: 'deviceHash_createdAt_fraud',
+		background: true,
+		sparse: true,
+	},
 );
 
 // Optionnel : Empêcher la création d'index automatique sur userId seul

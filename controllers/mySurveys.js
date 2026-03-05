@@ -8,6 +8,7 @@ const Opinion_Flash = require('../models/Opinion_Flash');
 const Opinion_2_Flash = require('../models/Opinion_2_Flash');
 const OrganizationMember = require('../models/OrganizationMember');
 const { normalizeSurveyStatus } = require('../utils/surveyStatus');
+const { aggregateCountBySurvey } = require('../services/fraud/opinionFilterService');
 
 const MANAGER_ROLES = ['owner', 'admin'];
 const SURVEY_LIST_PROJECTION =
@@ -16,24 +17,8 @@ const SURVEY_LIST_PROJECTION =
 const toSurveyIds = (surveys) =>
 	Array.isArray(surveys) ? surveys.map((survey) => survey?._id).filter(Boolean) : [];
 
-const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) => {
-	if (!surveyIds.length) return new Map();
-	const rows = await OpinionModel.aggregate([
-		{
-			$match: {
-				surveyId: { $in: surveyIds },
-			},
-		},
-		{
-			$group: {
-				_id: '$surveyId',
-				count: { $sum: 1 },
-			},
-		},
-	]);
-
-	return new Map(rows.map((row) => [String(row._id), Number(row.count) || 0]));
-};
+const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) =>
+	aggregateCountBySurvey(OpinionModel, surveyIds, 'clean');
 
 const buildIdentityKey = (survey, type) =>
 	`${type}:${String(survey?._id || '').trim()}`;

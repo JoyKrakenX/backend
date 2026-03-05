@@ -39,6 +39,15 @@ const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
 const { trackSurveyCreated, trackVote } = require('../services/billing/usageService');
 const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
 const { canManageSurveyByOrganization } = require('../services/surveyAuthorizationService');
+const {
+	evaluateFraudDecision,
+	buildOpinionFraudFields,
+} = require('../services/fraud/fraudDecisionService');
+const { logFraudDecision } = require('../services/fraud/fraudDecisionLogService');
+const {
+	buildStatusFilter,
+	getIntegritySnapshotForSurvey,
+} = require('../services/fraud/opinionFilterService');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -363,12 +372,53 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 
+		const fraudDecision = await evaluateFraudDecision({
+			actionType: 'vote',
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: 'multiple',
+			reason: req.body.reason,
+			identity: req.riskIdentity || {},
+			turnstileToken: req.body.turnstileToken || null,
+			challengeToken:
+				req?.riskIdentity?.challengeToken ||
+				String(req.headers?.['x-fraud-challenge-token'] || '').trim() ||
+				null,
+			opinionModel: 'Opinion_2',
+		});
+
+		if (fraudDecision.kind === 'challenge') {
+			return res.status(fraudDecision.httpStatus || 428).json({
+				code: fraudDecision.code,
+				message: fraudDecision.message,
+				challengeType: fraudDecision.challengeType,
+				challenge:
+					fraudDecision.challenge || {
+						type: fraudDecision.challengeType,
+						turnstile: fraudDecision.turnstile || null,
+						otp: fraudDecision.otp || null,
+					},
+				otp: fraudDecision.otp || null,
+			});
+		}
+
+		if (fraudDecision.decision === 'blocked') {
+			return res.status(fraudDecision.httpStatus || 403).json({
+				code: fraudDecision.code || 'FRAUD_BLOCKED',
+				message: fraudDecision.message || 'Vote bloque pour risque eleve.',
+			});
+		}
+
 		const opinion = new Opinion_2({
 			answer: String(req.body.choice).trim(),
 			reason: req.body.reason,
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 			userPseudo: req.userPseudo,
+			...buildOpinionFraudFields({
+				result: fraudDecision,
+				identity: req.riskIdentity || {},
+			}),
 		});
 
 		await opinion.save();
@@ -387,6 +437,7 @@ exports.submitOpinion = async (req, res) => {
 			Opinion_2,
 			survey._id,
 			normalizedSurvey.optionKeys,
+			buildStatusFilter('clean'),
 		);
 		emitClassicMultipleOpinion({ io, survey, opinion });
 		emitClassicMultipleCounts({
@@ -417,6 +468,8 @@ exports.submitOpinion = async (req, res) => {
 			hasParticipated: true,
 			canVote: false,
 			canViewResults: true,
+			voteStatus: opinion.fraudStatus,
+			fraudReview: opinion.fraudStatus === 'quarantined',
 		});
 	} catch (error) {
 		if (error?.code === 11000) {
@@ -437,7 +490,10 @@ exports.getFlashStats = async (req, res) => {
 		}
 
 		const OpinionModel = getMultipleOpinionModel(survey);
-		const totalOpinions = await OpinionModel.countDocuments({ surveyId });
+		const totalOpinions = await OpinionModel.countDocuments({
+			surveyId,
+			...buildStatusFilter('clean'),
+		});
 		return res.status(200).json({ totalOpinions });
 	} catch (error) {
 		console.error(error);
@@ -492,6 +548,7 @@ exports.closeSurvey = async (req, res) => {
 				Opinion2Flash,
 				survey._id,
 				optionKeys,
+				buildStatusFilter('clean'),
 			);
 			finalTotalOpinions = totalOpinions;
 
@@ -517,6 +574,7 @@ exports.closeSurvey = async (req, res) => {
 				Opinion_2,
 				survey._id,
 				optionKeys,
+				buildStatusFilter('clean'),
 			);
 			finalTotalOpinions = totalOpinions;
 			emitClassicMultipleCounts({
@@ -593,8 +651,13 @@ exports.getDetailedStats = async (req, res) => {
 			});
 		}
 
-		const opinions = await OpinionModel.find({ surveyId }).lean();
+		const cleanFilter = buildStatusFilter('clean');
+		const opinions = await OpinionModel.find({ surveyId, ...cleanFilter }).lean();
 		const counts = buildCountsMapFromOpinions(opinions, optionPayload.optionKeys);
+		const integrity =
+			allowAdminFilters ?
+				await getIntegritySnapshotForSurvey(OpinionModel, survey._id)
+			:	null;
 		let adminProfilesByUserId = null;
 
 		if (allowAdminFilters) {
@@ -649,11 +712,239 @@ exports.getDetailedStats = async (req, res) => {
 				demographicFiltersAvailable: allowAdminFilters,
 				demographicFilterMode: 'age_gender',
 			},
+			integrity,
 			...optionPayload.legacyFields,
 			opinions: enrichedOpinions,
 		});
 	} catch (error) {
 		console.error(error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.getIntegrity = async (req, res) => {
+	try {
+		const survey = await Survey_2.findById(req.params.id)
+			.select('explain userId organizationId')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({ message: 'Acces admin requis.' });
+		}
+
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const integrity = await getIntegritySnapshotForSurvey(
+			OpinionModel,
+			survey._id,
+		);
+		return res.status(200).json({
+			surveyId: String(survey._id),
+			type: 'multiple',
+			explain: survey.explain === false ? false : true,
+			...integrity,
+		});
+	} catch (error) {
+		console.error('survey_2.getIntegrity error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.getQuarantineQueue = async (req, res) => {
+	try {
+		const survey = await Survey_2.findById(req.params.id)
+			.select('explain userId organizationId')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({ message: 'Acces admin requis.' });
+		}
+
+		const limit = Math.min(
+			100,
+			Math.max(1, Number.parseInt(req.query?.limit || '50', 10)),
+		);
+		const page = Math.max(1, Number.parseInt(req.query?.page || '1', 10));
+		const skip = (page - 1) * limit;
+
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const statusFilterRaw = String(req.query?.status || '').trim().toLowerCase();
+		const allowedStatuses = ['quarantined', 'confirmed_fraud', 'all'];
+		const selectedStatus = allowedStatuses.includes(statusFilterRaw) ?
+				statusFilterRaw
+			:	'quarantined';
+		const queueStatusFilter =
+			selectedStatus === 'all' ?
+				{ $in: ['quarantined', 'confirmed_fraud'] }
+			:	selectedStatus;
+
+		const [items, total] = await Promise.all([
+			OpinionModel.find({
+				surveyId: survey._id,
+				fraudStatus: queueStatusFilter,
+			})
+				.select(
+					'_id answer reason userPseudo userId createdAt fraudStatus fraudScore fraudReasons challengeType',
+				)
+				.sort({ createdAt: -1 })
+				.skip(skip)
+				.limit(limit)
+				.lean(),
+			OpinionModel.countDocuments({
+				surveyId: survey._id,
+				fraudStatus: queueStatusFilter,
+			}),
+		]);
+
+		return res.status(200).json({
+			surveyId: String(survey._id),
+			status: selectedStatus,
+			total,
+			page,
+			limit,
+			items,
+		});
+	} catch (error) {
+		console.error('survey_2.getQuarantineQueue error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.reviewQuarantineOpinion = async (req, res) => {
+	try {
+		const action = String(req.body?.action || '').trim().toLowerCase();
+		if (!['release', 'confirm_fraud'].includes(action)) {
+			return res.status(400).json({ message: 'Action invalide.' });
+		}
+
+		const survey = await Survey_2.findById(req.params.id)
+			.select(
+				'explain userId organizationId isClosed status createdAt endedAt options reponse_1 reponse_2 reponse_3 reponse_4 reponse_5 reponse_6',
+			)
+			.lean();
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({ message: 'Acces admin requis.' });
+		}
+
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const opinion = await OpinionModel.findOne({
+			_id: req.params.opinionId,
+			surveyId: survey._id,
+		});
+		if (!opinion) {
+			return res.status(404).json({ message: 'Opinion introuvable.' });
+		}
+
+		if (action === 'release') {
+			opinion.fraudStatus = 'released';
+			opinion.fraudReasons = [
+				...new Set([...(opinion.fraudReasons || []), 'ADMIN_RELEASED']),
+			];
+		} else {
+			opinion.fraudStatus = 'confirmed_fraud';
+			opinion.fraudReasons = [
+				...new Set([...(opinion.fraudReasons || []), 'ADMIN_CONFIRMED_FRAUD']),
+			];
+		}
+		opinion.reviewedBy = req.userId;
+		opinion.reviewedAt = new Date();
+		await opinion.save();
+		await logFraudDecision({
+			event: 'quarantine_review',
+			decision: action === 'release' ? 'released' : 'confirmed_fraud',
+			actionType: 'review',
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: survey.explain === false ? 'multiple_flash' : 'multiple',
+			opinionModel: OpinionModel.modelName,
+			ipHash: opinion.ipHash || null,
+			deviceHash: opinion.deviceHash || null,
+			riskScore: Number(opinion.fraudScore || 0),
+			reasons: [...new Set([...(opinion.fraudReasons || []), 'ADMIN_REVIEW'])],
+			challengeType: String(opinion.challengeType || 'none'),
+			meta: {
+				action,
+				opinionId: String(opinion._id),
+				reviewedStatus: opinion.fraudStatus,
+			},
+		});
+
+		const io = req.app.get('io');
+		const options = resolveSurveyOptions(survey);
+		const optionKeys = buildOptionKeys(options);
+		const labels = buildLabelsMapFromOptions(options);
+		const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+			OpinionModel,
+			survey._id,
+			optionKeys,
+			buildStatusFilter('clean'),
+		);
+
+		if (survey.explain === false) {
+			io.to(`flash-multiple-${survey._id}`).emit('flash:counts', {
+				surveyId: String(survey._id),
+				type: 'multiple',
+				options,
+				optionKeys,
+				labels,
+				counts,
+				totalOpinions,
+				isClosed: Boolean(survey.isClosed),
+			});
+		} else {
+			emitClassicMultipleCounts({
+				io,
+				survey,
+				options,
+				counts,
+				totalOpinions,
+				isClosed: survey.isClosed,
+			});
+		}
+
+		const organizationId = await resolveSurveyOrganizationId(survey);
+		emitSurveyFeedUpdate(req.app.get('io'), {
+			action: 'vote',
+			surveyId: survey._id,
+			type: 'multiple',
+			explain: survey.explain,
+			status: normalizeSurveyStatus(survey.status),
+			isClosed: Boolean(survey.isClosed),
+			ownerUserId: survey.userId,
+			organizationId: organizationId || survey.organizationId || null,
+			createdAt: survey.createdAt,
+			endedAt: survey.endedAt,
+			totalOpinions,
+			occurredAt: new Date(),
+		});
+
+		const integrity = await getIntegritySnapshotForSurvey(
+			OpinionModel,
+			survey._id,
+		);
+		return res.status(200).json({
+			message:
+				action === 'release' ?
+					'Opinion liberee et reintegree.'
+				:	'Opinion confirmee comme fraude.',
+			opinionId: String(opinion._id),
+			status: opinion.fraudStatus,
+			integrity,
+		});
+	} catch (error) {
+		console.error('survey_2.reviewQuarantineOpinion error:', error);
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };

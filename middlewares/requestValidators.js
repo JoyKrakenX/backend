@@ -12,16 +12,17 @@ const statusSchema = z
 			!value ||
 			[
 				'public',
-				'privée',
+				'privÃ©e',
 				'privee',
 				'private',
-				'privé',
+				'privÃ©',
 				'prive',
 			].includes(value),
 		{ message: 'Status de sondage invalide.' },
 	);
 
 const explainSchema = z.union([z.boolean(), z.string(), z.number()]).optional();
+const legacyMultipleOptionSchema = z.string().trim().max(220).nullish();
 
 const createBinarySurveySchema = z.object({
 	theme: z.string().trim().min(2).max(180),
@@ -35,12 +36,12 @@ const createBinarySurveySchema = z.object({
 const createMultipleSurveySchema = createBinarySurveySchema
 	.extend({
 		options: z.array(z.string().trim().min(1).max(220)).min(2).max(6).optional(),
-		reponse_1: z.string().trim().max(220).optional(),
-		reponse_2: z.string().trim().max(220).optional(),
-		reponse_3: z.string().trim().max(220).optional(),
-		reponse_4: z.string().trim().max(220).optional(),
-		reponse_5: z.string().trim().max(220).optional(),
-		reponse_6: z.string().trim().max(220).optional(),
+		reponse_1: legacyMultipleOptionSchema,
+		reponse_2: legacyMultipleOptionSchema,
+		reponse_3: legacyMultipleOptionSchema,
+		reponse_4: legacyMultipleOptionSchema,
+		reponse_5: legacyMultipleOptionSchema,
+		reponse_6: legacyMultipleOptionSchema,
 	})
 	.superRefine((data, ctx) => {
 		const options = Array.isArray(data.options) ? data.options.filter(Boolean) : [];

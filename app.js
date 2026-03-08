@@ -88,6 +88,8 @@ app.use(
 		contentSecurityPolicy: {
 			useDefaults: true,
 			directives: {
+				// Allow source-map fetches from Bootstrap CDN without relaxing default-src.
+				connectSrc: ["'self'", 'https://cdn.jsdelivr.net'],
 				// Keep CSP strict while allowing external user avatars.
 				imgSrc: [
 					"'self'",

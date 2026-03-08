@@ -1,4 +1,4 @@
-/** @format */
+﻿/** @format */
 
 const mongoose = require('mongoose');
 
@@ -242,7 +242,10 @@ exports.createSurvey = async (req, res) => {
 		});
 	} catch (error) {
 		if (error && error.code === 11000) {
-			return res.status(400).json({ message: 'Un sondage avec ce theme existe deja.' });
+			return res.status(400).json({
+				message:
+					'Conflit de donnees detecte lors de l enregistrement du sondage.',
+			});
 		}
 		console.error(error);
 		return res.status(400).json({ error });
@@ -948,3 +951,4 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
+

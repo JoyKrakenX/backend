@@ -1,4 +1,4 @@
-/** @format */
+﻿/** @format */
 
 const mongoose = require('mongoose');
 
@@ -196,9 +196,10 @@ exports.createSurvey = async (req, res) => {
 		});
 	} catch (error) {
 		if (error && error.code === 11000) {
-			return res
-				.status(400)
-				.json({ message: 'Un sondage avec ce thème existe déjà.' });
+			return res.status(400).json({
+				message:
+					'Conflit de donnees detecte lors de l enregistrement du sondage.',
+			});
 		}
 		console.error(error);
 		res.status(400).json({ error });
@@ -284,12 +285,12 @@ exports.submitOpinion = async (req, res) => {
 		if (survey.explain === false) {
 			return res.status(400).json({
 				message:
-					'Ce sondage est en mode Flash. Utilisez les endpoints Flash dédiés.',
+					'Ce sondage est en mode Flash. Utilisez les endpoints Flash dÃ©diÃ©s.',
 			});
 		}
 		if (survey.isClosed) {
 			return res.status(403).json({
-				message: 'Le sondage est clôturé, vous ne pouvez plus y répondre.',
+				message: 'Le sondage est clÃ´turÃ©, vous ne pouvez plus y rÃ©pondre.',
 			});
 		}
 		const organizationId = await resolveSurveyOrganizationId(survey);
@@ -313,12 +314,12 @@ exports.submitOpinion = async (req, res) => {
 		if (existingOpinion) {
 			return res.status(403).json({
 				message:
-					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
+					'Vous avez dÃ©jÃ  rÃ©pondu Ã  ce sondage, merci de patienter la publication des rÃ©sultats.',
 			});
 		}
 
 		if (typeof req.body.answer !== 'boolean') {
-			return res.status(400).json({ message: 'Réponse invalide.' });
+			return res.status(400).json({ message: 'RÃ©ponse invalide.' });
 		}
 
 		if (!req.body.reason || req.body.reason.trim() === '') {
@@ -557,11 +558,11 @@ exports.closeSurvey = async (req, res) => {
 		}
 
 		if (survey.userId.toString() !== req.userId.toString()) {
-			return res.status(403).json({ message: 'Non autorisé' });
+			return res.status(403).json({ message: 'Non autorisÃ©' });
 		}
 
 		if (survey.isClosed) {
-			return res.status(400).json({ message: 'Le sondage est déjà clôturé' });
+			return res.status(400).json({ message: 'Le sondage est dÃ©jÃ  clÃ´turÃ©' });
 		}
 
 		survey.isClosed = true;
@@ -631,7 +632,7 @@ exports.closeSurvey = async (req, res) => {
 			totalOpinions: finalTotalOpinions,
 		});
 
-		res.status(200).json({ message: 'Sondage clôturé avec succès' });
+		res.status(200).json({ message: 'Sondage clÃ´turÃ© avec succÃ¨s' });
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ error: 'Erreur serveur' });
@@ -844,6 +845,7 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
+
 
 
 

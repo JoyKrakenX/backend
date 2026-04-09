@@ -18,17 +18,17 @@ const normalizeLocale = (locale) => {
 
 const CONTENT = {
 	fr: {
-		subject: 'Confirmez votre inscription a la newsletter SurveyApp',
+		subject: 'Confirmez votre inscription a la newsletter Community',
 		preheader:
-			'Confirmez votre abonnement en un clic pour recevoir les nouveautes SurveyApp.',
+			'Confirmez votre abonnement en un clic pour recevoir les nouveautes Community.',
 		title: 'Confirmez votre inscription',
 		lead:
-			'Merci pour votre inscription a la newsletter SurveyApp. Un clic suffit pour activer votre abonnement.',
+			'Merci pour votre inscription a la newsletter Community. Un clic suffit pour activer votre abonnement.',
 		benefitsTitle: 'Ce que vous recevrez',
 		benefits: [
 			'Les nouvelles fonctionnalites en avant-premiere',
 			'Des annonces produit importantes',
-			'Des conseils pour mieux utiliser SurveyApp',
+			'Des conseils pour mieux utiliser Community',
 		],
 		cta: 'Confirmer mon inscription',
 		fallbackTitle: 'Le bouton ne fonctionne pas ?',
@@ -36,20 +36,20 @@ const CONTENT = {
 		security:
 			"Si vous n'etes pas a l'origine de cette demande, ignorez simplement cet email.",
 		unsubscribe: 'Se desinscrire',
-		copyright: 'SurveyApp. Tous droits reserves.',
+		copyright: 'Community. Tous droits reserves.',
 	},
 	en: {
-		subject: 'Confirm your SurveyApp newsletter subscription',
+		subject: 'Confirm your Community newsletter subscription',
 		preheader:
-			'Confirm your subscription in one click to receive SurveyApp updates.',
+			'Confirm your subscription in one click to receive Community updates.',
 		title: 'Confirm your subscription',
 		lead:
-			'Thanks for subscribing to the SurveyApp newsletter. One click is enough to activate your subscription.',
+			'Thanks for subscribing to the Community newsletter. One click is enough to activate your subscription.',
 		benefitsTitle: 'What you will receive',
 		benefits: [
 			'Early access to new features',
 			'Important product announcements',
-			'Practical tips to use SurveyApp better',
+			'Practical tips to use Community better',
 		],
 		cta: 'Confirm my subscription',
 		fallbackTitle: 'Button not working?',
@@ -57,20 +57,20 @@ const CONTENT = {
 		security:
 			'If you did not request this subscription, you can safely ignore this email.',
 		unsubscribe: 'Unsubscribe',
-		copyright: 'SurveyApp. All rights reserved.',
+		copyright: 'Community. All rights reserved.',
 	},
 	es: {
-		subject: 'Confirma tu suscripcion al boletin de SurveyApp',
+		subject: 'Confirma tu suscripcion al boletin de Community',
 		preheader:
-			'Confirma tu suscripcion con un clic para recibir novedades de SurveyApp.',
+			'Confirma tu suscripcion con un clic para recibir novedades de Community.',
 		title: 'Confirma tu suscripcion',
 		lead:
-			'Gracias por suscribirte al boletin de SurveyApp. Un clic es suficiente para activar tu suscripcion.',
+			'Gracias por suscribirte al boletin de Community. Un clic es suficiente para activar tu suscripcion.',
 		benefitsTitle: 'Lo que recibiras',
 		benefits: [
 			'Nuevas funciones en primicia',
 			'Anuncios importantes del producto',
-			'Consejos practicos para usar mejor SurveyApp',
+			'Consejos practicos para usar mejor Community',
 		],
 		cta: 'Confirmar mi suscripcion',
 		fallbackTitle: 'El boton no funciona?',
@@ -78,20 +78,20 @@ const CONTENT = {
 		security:
 			'Si no solicitaste esta suscripcion, puedes ignorar este correo.',
 		unsubscribe: 'Darse de baja',
-		copyright: 'SurveyApp. Todos los derechos reservados.',
+		copyright: 'Community. Todos los derechos reservados.',
 	},
 	de: {
-		subject: 'Bestaetigen Sie Ihr SurveyApp-Newsletter-Abonnement',
+		subject: 'Bestaetigen Sie Ihr Community-Newsletter-Abonnement',
 		preheader:
-			'Bestaetigen Sie Ihr Abonnement mit einem Klick, um SurveyApp-Updates zu erhalten.',
+			'Bestaetigen Sie Ihr Abonnement mit einem Klick, um Community-Updates zu erhalten.',
 		title: 'Abonnement bestaetigen',
 		lead:
-			'Vielen Dank fuer Ihre Anmeldung zum SurveyApp-Newsletter. Ein Klick aktiviert Ihr Abonnement.',
+			'Vielen Dank fuer Ihre Anmeldung zum Community-Newsletter. Ein Klick aktiviert Ihr Abonnement.',
 		benefitsTitle: 'Was Sie erhalten',
 		benefits: [
 			'Fruehen Zugriff auf neue Funktionen',
 			'Wichtige Produktankuendigungen',
-			'Praktische Tipps fuer SurveyApp',
+			'Praktische Tipps fuer Community',
 		],
 		cta: 'Mein Abonnement bestaetigen',
 		fallbackTitle: 'Button funktioniert nicht?',
@@ -99,7 +99,7 @@ const CONTENT = {
 		security:
 			'Wenn Sie diese Anmeldung nicht angefordert haben, koennen Sie diese E-Mail ignorieren.',
 		unsubscribe: 'Abmelden',
-		copyright: 'SurveyApp. Alle Rechte vorbehalten.',
+		copyright: 'Community. Alle Rechte vorbehalten.',
 	},
 };
 
@@ -160,10 +160,10 @@ const buildNewsletterConfirmationEmail = ({
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
                     <td style="vertical-align:middle;">
-                      <img src="${safeLogoUrl}" width="42" height="42" alt="SurveyApp" style="display:block;border:0;outline:none;text-decoration:none;" />
+                      <img src="${safeLogoUrl}" width="42" height="42" alt="Community" style="display:block;border:0;outline:none;text-decoration:none;" />
                     </td>
                     <td style="padding-left:12px;vertical-align:middle;">
-                      <div style="font-size:22px;font-weight:700;line-height:1.2;color:#0f172a;">SurveyApp</div>
+                      <div style="font-size:22px;font-weight:700;line-height:1.2;color:#0f172a;">Community</div>
                       <div style="font-size:13px;color:#334155;">${escapeHtml(content.title)}</div>
                     </td>
                   </tr>

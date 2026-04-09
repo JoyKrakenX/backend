@@ -167,7 +167,7 @@ const resolveBillingContact = async ({
 	if (!organizationId) {
 		return {
 			email: fallbackEmail || null,
-			name: fallbackName || 'SurveyApp Client',
+			name: fallbackName || 'Community Client',
 		};
 	}
 
@@ -183,11 +183,17 @@ const resolveBillingContact = async ({
 	const email =
 		String(owner?.email || fallbackEmail || '') ||
 		String(process.env.BILLING_DEFAULT_EMAIL || '').trim() ||
-		'no-reply@surveyapp.tech';
+		String(process.env.MAILJET_FROM_EMAIL || process.env.SUPPORT_INBOX_EMAIL || '').trim();
 	const name =
-		owner?.pseudo || owner?.name || organization?.name || fallbackName || 'SurveyApp Client';
+		owner?.pseudo || owner?.name || organization?.name || fallbackName || 'Community Client';
 
-	return { email: email || 'no-reply@surveyapp.tech', name };
+	return {
+		email:
+			email ||
+			String(process.env.SUPPORT_INBOX_EMAIL || '').trim() ||
+			'community@local.invalid',
+		name,
+	};
 };
 
 const ensureInvoiceFxLock = async ({ invoice, quoteCurrency, forceRefresh = false }) => {
@@ -473,7 +479,7 @@ const createCheckoutForInvoice = async ({
 		transaction = await createTransaction({
 			chargeAmount,
 			chargeCurrency,
-			description: `SurveyApp Billing ${String(invoice?.kind || 'renewal').toUpperCase()}`,
+			description: `Community Billing ${String(invoice?.kind || 'renewal').toUpperCase()}`,
 			callbackUrl,
 			merchantReference,
 			customerEmail,
@@ -656,4 +662,8 @@ module.exports = {
 	ensureInvoiceFxLock,
 	buildCheckoutMetadata,
 	validateSignedMetadata,
+	__test: {
+		getFedaPayMaxAmountXof,
+		assertProviderAmountCap,
+	},
 };

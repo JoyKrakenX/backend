@@ -30,7 +30,7 @@ const buildPersonalOrganizationName = (user) => {
 	if (name) return `${name} Studio`;
 	const email = String(user?.email || '').trim();
 	const prefix = email.split('@')[0];
-	return `${prefix || 'SurveyApp'} Studio`;
+	return `${prefix || 'Community'} Studio`;
 };
 
 const ensureTrialSubscriptionForOrganization = async (organizationId, now = new Date()) => {

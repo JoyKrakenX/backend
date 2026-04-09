@@ -32,7 +32,7 @@ const getMailjetClient = () => {
 
 const resolveFrom = (from) => {
 	const fallbackEmail = String(process.env.MAILJET_FROM_EMAIL || '').trim();
-	const fallbackName = String(process.env.MAILJET_FROM_NAME || 'SurveyApp').trim();
+	const fallbackName = String(process.env.MAILJET_FROM_NAME || 'Community').trim();
 	const normalizedFrom = String(from || '').trim();
 
 	if (!normalizedFrom) {

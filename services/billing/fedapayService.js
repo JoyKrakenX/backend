@@ -128,7 +128,7 @@ const normalizeCustomer = ({ customerEmail, customerName }) => {
 	const parts = fullName.split(/\s+/).filter(Boolean);
 	return {
 		email: safeEmail || undefined,
-		firstname: parts[0] || 'SurveyApp',
+		firstname: parts[0] || 'Community',
 		lastname: parts.slice(1).join(' ') || 'Client',
 	};
 };

@@ -78,7 +78,7 @@ const startEmailOtpChallenge = async ({
 
 	await sendEmail({
 		to: record.userEmail,
-		subject: 'Verification de securite SurveyApp',
+		subject: 'Verification de securite Community',
 		html: `<p>Code de verification: <strong>${code}</strong></p><p>Ce code expire dans ${Math.round(
 			Number(FRAUD_CONFIG.emailOtpTtlSeconds || 600) / 60,
 		)} minutes.</p>`,

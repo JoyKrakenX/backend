@@ -58,7 +58,7 @@ const processSubscriptionLifecycle = async () => {
 				const contact = await resolveBillingContact({
 					organizationId: subscription.organizationId,
 					fallbackEmail: process.env.BILLING_DEFAULT_EMAIL || null,
-					fallbackName: 'SurveyApp Client',
+					fallbackName: 'Community Client',
 				});
 				paymentResult = await attemptAutoRenewalCharge({
 					subscription,

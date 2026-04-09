@@ -180,7 +180,7 @@ module.exports = (supportNamespace) => {
 			(conversation.clientUserId ? 'Utilisateur connecte' : 'Visiteur');
 		const guestEmail =
 			conversation.guestProfile?.email ||
-			(conversation.clientUserId ? 'authenticated@surveyapp.local' : 'guest@surveyapp.local');
+			(conversation.clientUserId ? 'authenticated@community.local' : 'guest@community.local');
 
 		await SupportTicket.create({
 			ticketRef: `SUP-${new Date().getFullYear()}-${Math.floor(

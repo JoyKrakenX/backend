@@ -27,6 +27,14 @@ router.post(
 	chatController.toggleMessageLike
 );
 
+// Supprimer un message du chat
+router.delete(
+	'/messages/:messageId',
+	sensitiveRateLimit,
+	auth,
+	chatController.deleteMessage
+);
+
 // Récupérer les statistiques du chat
 router.get('/:surveyId/stats', auth, chatController.getChatStats);
 

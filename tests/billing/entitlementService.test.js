@@ -10,10 +10,10 @@ const baseInput = {
 	role: 'owner',
 	subscription: {
 		status: 'active',
-		planCode: 'TV_PRO',
+		planCode: 'SCALE',
 	},
 	plan: {
-		code: 'TV_PRO',
+		code: 'SCALE',
 		quotas: {
 			surveys: null,
 			exports: null,
@@ -33,6 +33,7 @@ const baseInput = {
 		},
 		chatPeakMax: 0,
 		adminsPeak: 1,
+		adminsCurrent: 1,
 	},
 };
 

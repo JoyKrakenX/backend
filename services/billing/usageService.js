@@ -4,7 +4,8 @@ const mongoose = require('mongoose');
 
 const UsageMonthly = require('../../models/UsageMonthly');
 const UsageEvent = require('../../models/UsageEvent');
-const { getPeriodKeyUtc } = require('./periodService');
+const { buildUsageWindowDescriptor } = require('./periodService');
+const { getOrganizationSubscription } = require('./subscriptionService');
 
 const toObjectId = (id) =>
 	mongoose.Types.ObjectId.isValid(String(id || ''))
@@ -14,13 +15,24 @@ const toObjectId = (id) =>
 const buildDuplicateError = (error) =>
 	Boolean(error && (error.code === 11000 || error?.message?.includes('duplicate key')));
 
-const ensureMonthlyUsageDocument = async (organizationId, periodKey) => {
+const resolveUsageWindowDescriptor = async (organizationId, date = new Date()) => {
+	const subscription = await getOrganizationSubscription(organizationId, date);
+	return buildUsageWindowDescriptor({
+		subscription,
+		date,
+	});
+};
+
+const ensureUsageDocument = async (organizationId, descriptor) => {
 	await UsageMonthly.findOneAndUpdate(
-		{ organizationId, periodKey },
+		{ organizationId, periodKey: descriptor.periodKey },
 		{
 			$setOnInsert: {
 				organizationId,
-				periodKey,
+				periodKey: descriptor.periodKey,
+				periodType: descriptor.periodType,
+				periodStartAt: descriptor.periodStartAt,
+				periodEndAt: descriptor.periodEndAt,
 				counts: {
 					votes: 0,
 					surveys: 0,
@@ -45,24 +57,28 @@ const registerUsageEvent = async ({
 }) => {
 	const orgId = toObjectId(organizationId);
 	if (!orgId || !idempotencyKey) {
-		return { created: false, periodKey: getPeriodKeyUtc(date) };
+		const descriptor = await resolveUsageWindowDescriptor(organizationId, date);
+		return { created: false, descriptor };
 	}
 
-	const periodKey = getPeriodKeyUtc(date);
+	const descriptor = await resolveUsageWindowDescriptor(orgId, date);
 
 	try {
 		await UsageEvent.create({
 			organizationId: orgId,
-			periodKey,
+			periodKey: descriptor.periodKey,
+			periodType: descriptor.periodType,
+			periodStartAt: descriptor.periodStartAt,
+			periodEndAt: descriptor.periodEndAt,
 			action,
 			amount,
 			idempotencyKey: String(idempotencyKey),
 			meta,
 		});
-		return { created: true, periodKey };
+		return { created: true, descriptor };
 	} catch (error) {
 		if (buildDuplicateError(error)) {
-			return { created: false, periodKey };
+			return { created: false, descriptor };
 		}
 		throw error;
 	}
@@ -91,13 +107,13 @@ const incrementCounter = async ({
 	if (!registration.created) {
 		return UsageMonthly.findOne({
 			organizationId: orgId,
-			periodKey: registration.periodKey,
+			periodKey: registration.descriptor.periodKey,
 		}).lean();
 	}
 
-	await ensureMonthlyUsageDocument(orgId, registration.periodKey);
+	await ensureUsageDocument(orgId, registration.descriptor);
 	await UsageMonthly.updateOne(
-		{ organizationId: orgId, periodKey: registration.periodKey },
+		{ organizationId: orgId, periodKey: registration.descriptor.periodKey },
 		{
 			$inc: { [`counts.${counterKey}`]: Number(amount || 1) },
 			$set: { lastUpdatedAt: new Date() },
@@ -106,7 +122,7 @@ const incrementCounter = async ({
 
 	return UsageMonthly.findOne({
 		organizationId: orgId,
-		periodKey: registration.periodKey,
+		periodKey: registration.descriptor.periodKey,
 	}).lean();
 };
 
@@ -150,11 +166,11 @@ const syncAdminsPeak = async ({
 		date,
 	});
 
-	await ensureMonthlyUsageDocument(orgId, registration.periodKey);
+	await ensureUsageDocument(orgId, registration.descriptor);
 	await UsageMonthly.updateOne(
 		{
 			organizationId: orgId,
-			periodKey: registration.periodKey,
+			periodKey: registration.descriptor.periodKey,
 			adminsPeak: { $lt: safeAdminsCount },
 		},
 		{
@@ -167,7 +183,7 @@ const syncAdminsPeak = async ({
 
 	return UsageMonthly.findOne({
 		organizationId: orgId,
-		periodKey: registration.periodKey,
+		periodKey: registration.descriptor.periodKey,
 	}).lean();
 };
 
@@ -194,10 +210,10 @@ const recordChatPeak = async ({
 		date,
 	});
 
-	await ensureMonthlyUsageDocument(orgId, registration.periodKey);
+	await ensureUsageDocument(orgId, registration.descriptor);
 	const usage = await UsageMonthly.findOne({
 		organizationId: orgId,
-		periodKey: registration.periodKey,
+		periodKey: registration.descriptor.periodKey,
 	});
 	if (!usage) return null;
 
@@ -216,12 +232,24 @@ const recordChatPeak = async ({
 const getMonthlyUsage = async (organizationId, date = new Date()) => {
 	const orgId = toObjectId(organizationId);
 	if (!orgId) return null;
-	const periodKey = getPeriodKeyUtc(date);
-	return UsageMonthly.findOne({ organizationId: orgId, periodKey }).lean();
+	const descriptor = await resolveUsageWindowDescriptor(orgId, date);
+	const usage = await UsageMonthly.findOne({
+		organizationId: orgId,
+		periodKey: descriptor.periodKey,
+	}).lean();
+	if (!usage) return null;
+	return {
+		...usage,
+		periodKey: descriptor.periodKey,
+		periodType: descriptor.periodType,
+		periodStartAt: descriptor.periodStartAt,
+		periodEndAt: descriptor.periodEndAt,
+	};
 };
 
 module.exports = {
 	getMonthlyUsage,
+	resolveUsageWindowDescriptor,
 	trackSurveyCreated,
 	trackVote,
 	trackExport,

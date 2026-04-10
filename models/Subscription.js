@@ -12,6 +12,7 @@ const subscriptionSchema = new mongoose.Schema(
 			index: true,
 		},
 		planCode: { type: String, required: true, index: true },
+		trialPlanCode: { type: String, default: null, index: true },
 		status: {
 			type: String,
 			enum: [

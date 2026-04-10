@@ -14,46 +14,17 @@ require('dotenv').config({
 
 const User = require('../models/User');
 const {
+	DATA_COLLECTIONS,
+	PURGE_ORDER,
+} = require('./environment-data-collections');
+const {
 	getSupportAdminEmails,
 	normalizeEmail,
 } = require('../utils/supportAdminAllowlist');
 
-const DATA_COLLECTIONS = [
-	'users',
-	'surveys',
-	'survey_2',
-	'opinions',
-	'opinion_2',
-	'opinion_flashes',
-	'opinion_2_flashes',
-	'chatmessages',
-	'supporttickets',
-	'supportmessages',
-	'supportconversations',
-	'supportpushsubscriptions',
-	'newslettersubscribers',
-	'userprivacysettings',
-];
-
-const PURGE_ORDER = [
-	'supportmessages',
-	'supportconversations',
-	'supporttickets',
-	'chatmessages',
-	'opinions',
-	'opinion_2',
-	'opinion_flashes',
-	'opinion_2_flashes',
-	'surveys',
-	'survey_2',
-	'newslettersubscribers',
-	'supportpushsubscriptions',
-	'userprivacysettings',
-	'users',
-];
-
 const DEFAULT_SCOPE = 'full';
 const EXECUTE_CONFIRMATION_TOKEN = 'CLEAN_TEST_DATA';
+const USERS_COLLECTION = User.collection.collectionName;
 
 function timestampForFile() {
 	return new Date().toISOString().replace(/[:.]/g, '-');
@@ -267,6 +238,9 @@ function validateOptions(options) {
 	if (!options.targetDb) {
 		throw new Error('Missing required option: --target-db <dbName>');
 	}
+	if (options.targetDb !== 'test') {
+		throw new Error('Data purge is only allowed on the "test" database.');
+	}
 	if (options.scope !== DEFAULT_SCOPE) {
 		throw new Error(`Unsupported scope: ${options.scope}. Allowed: ${DEFAULT_SCOPE}`);
 	}
@@ -281,12 +255,12 @@ function buildVerificationErrors(countsAfter, keepUsers, existingSet) {
 	const errors = [];
 
 	for (const collectionName of DATA_COLLECTIONS) {
-		if (!existingSet.has(collectionName) && collectionName !== 'users') continue;
+		if (!existingSet.has(collectionName) && collectionName !== USERS_COLLECTION) continue;
 		const currentCount = Number(countsAfter[collectionName] || 0);
-		if (collectionName === 'users') {
+		if (collectionName === USERS_COLLECTION) {
 			if (currentCount !== keepUsers.length) {
 				errors.push(
-					`users count mismatch: expected ${keepUsers.length}, got ${currentCount}`,
+					`${USERS_COLLECTION} count mismatch: expected ${keepUsers.length}, got ${currentCount}`,
 				);
 			}
 			continue;

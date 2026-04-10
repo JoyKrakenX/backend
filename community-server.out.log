@@ -1,0 +1,40 @@
+[dotenv@17.2.3] injecting env (57) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[SupportPush] ready=true
+[EmailService] provider=mailjet ready=true
+Socket adapter Redis active.
+Listening on port 3000
+Connexion a MongoDB reussie !
+Client Socket.IO connecte Ode-LaxmsYo9_wkiAAAB
+Client deconnecte Ode-LaxmsYo9_wkiAAAB
+Client Socket.IO connecte t1hC60aSuYSzp_8YAAAD
+Client deconnecte t1hC60aSuYSzp_8YAAAD
+Client Socket.IO connecte 0RFslBk9ZY7pICP1AAAF
+Client deconnecte 0RFslBk9ZY7pICP1AAAF
+Client Socket.IO connecte m9qARfaoYhLTCxdAAAAH
+Client deconnecte m9qARfaoYhLTCxdAAAAH
+Client Socket.IO connecte fPXpESwT8mYJ5DcSAAAJ
+Client deconnecte fPXpESwT8mYJ5DcSAAAJ
+Client Socket.IO connecte vPm2MQo8B4Ec9D7QAAAL
+Client deconnecte vPm2MQo8B4Ec9D7QAAAL
+Client Socket.IO connecte 8ge23StB4gFMjcg-AAAN
+Client deconnecte 8ge23StB4gFMjcg-AAAN
+Client Socket.IO connecte rXvglb1rDW-6EjjtAAAP
+Client deconnecte rXvglb1rDW-6EjjtAAAP
+Client Socket.IO connecte sZbwkIN4glY4XcsEAAAR
+Client deconnecte sZbwkIN4glY4XcsEAAAR
+Client Socket.IO connecte SABjAhWTSEJQ6CPeAAAT
+Client deconnecte SABjAhWTSEJQ6CPeAAAT
+Client Socket.IO connecte zAokBrQLLgyKO4WgAAAV
+Client deconnecte zAokBrQLLgyKO4WgAAAV
+Client Socket.IO connecte XtDbhBYQQQBXb7WuAAAX
+Client deconnecte XtDbhBYQQQBXb7WuAAAX
+Client Socket.IO connecte -Jzsfl4ehP_XYlpwAAAZ
+Client deconnecte -Jzsfl4ehP_XYlpwAAAZ
+Client Socket.IO connecte e3XlZdVu2OPDqhbqAAAb
+Client deconnecte e3XlZdVu2OPDqhbqAAAb
+Client Socket.IO connecte QhbWtF8rLl_cAO8wAAAd
+Client deconnecte QhbWtF8rLl_cAO8wAAAd
+Client Socket.IO connecte B_j3ULqx5jZoNeh5AAAf
+Client deconnecte B_j3ULqx5jZoNeh5AAAf
+Client Socket.IO connecte _4cBXP6Rus6BeJrBAAAh
+Client deconnecte _4cBXP6Rus6BeJrBAAAh

@@ -33,7 +33,7 @@ const invoiceSchema = new mongoose.Schema(
 		currency: { type: String, default: 'USD' },
 		kind: {
 			type: String,
-			enum: ['renewal', 'upgrade', 'retry', 'manual'],
+			enum: ['renewal', 'upgrade', 'retry', 'manual', 'addon'],
 			default: 'renewal',
 		},
 		status: {
@@ -43,12 +43,6 @@ const invoiceSchema = new mongoose.Schema(
 			index: true,
 		},
 		baseAmountUsd: { type: Number, default: 0 },
-		overage: {
-			votesUsd: { type: Number, default: 0 },
-			chatUsd: { type: Number, default: 0 },
-			adminsUsd: { type: Number, default: 0 },
-			totalUsd: { type: Number, default: 0 },
-		},
 		totalAmountUsd: { type: Number, required: true },
 		dueAt: { type: Date, default: null },
 		paidAt: { type: Date, default: null },

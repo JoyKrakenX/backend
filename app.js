@@ -185,6 +185,10 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ---------------------------
 // Frontend statique + SPA catch-all
 // ---------------------------
+app.get(['/pricing', '/pricing.html'], (_req, res) => {
+	res.redirect(302, '/billing.html');
+});
+
 app.use(
 	express.static(path.join(__dirname, '../frontend'), {
 		setHeaders: (res, filePath) => {

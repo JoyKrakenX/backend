@@ -1,0 +1,6 @@
+[dotenv@17.2.3] injecting env (57) from .env -- tip: 👥 sync secrets across teammates & machines: https://dotenvx.com/ops
+[SupportPush] ready=true
+[EmailService] provider=mailjet ready=true
+Socket adapter Redis active.
+Listening on port 3000
+Connexion a MongoDB reussie !

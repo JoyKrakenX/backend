@@ -7,7 +7,10 @@ const Survey = require('../models/Survey');
 const Survey_2 = require('../models/Survey_2');
 const User = require('../models/User');
 const { authorizeAction } = require('../services/billing/entitlementService');
-const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
+const {
+	ENTITLEMENT_ACTIONS,
+	ENTITLEMENT_DENY_CODES,
+} = require('../services/billing/constants');
 const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
 const { getRedisClient } = require('../services/redisService');
 const { recordChatPeak } = require('../services/billing/usageService');
@@ -389,6 +392,35 @@ module.exports = (io) => {
 					redisUpdate?.usedRedis
 						? Number(redisUpdate.concurrentCount || 0)
 						: roomUsers.size;
+
+				const liveLimit = Number(entitlement?.effectiveQuotas?.chatConcurrent);
+				if (
+					Number.isFinite(liveLimit) &&
+					liveLimit > 0 &&
+					concurrentCount > liveLimit
+				) {
+					const removal = await clearSocketPresence(socket);
+					socket.leave(roomName);
+					socket.data.roomName = null;
+					socket.data.userId = null;
+					socket.data.pseudo = null;
+					socket.data.picture = null;
+					socket.data.organizationId = null;
+					socket.data.surveyId = null;
+					socket.data.surveyType = null;
+
+					await emitRoomPresence({
+						roomName,
+						organizationId: removal?.organizationId || surveyOrganizationId,
+						surveyId: removal?.surveyId || surveyId,
+					});
+
+					return socket.emit('error', {
+						code: ENTITLEMENT_DENY_CODES.LIVE_CONCURRENT_LIMIT_REACHED,
+						message:
+							'Capacite live atteinte pour ce cycle. Ajoutez un Live Event Boost ou passez au plan superieur.',
+					});
+				}
 
 				if (isFirstPresenceForUser) {
 					await recordChatPeak({

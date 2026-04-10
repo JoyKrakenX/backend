@@ -3,7 +3,7 @@
 const cron = require('node-cron');
 
 const Subscription = require('../../models/Subscription');
-const { getPlanByCode } = require('./planService');
+const { getPlanByCode, isPaidPlan } = require('./planService');
 const { getMonthlyUsage } = require('./usageService');
 const {
 	findOrCreateInvoiceForOperation,
@@ -13,6 +13,7 @@ const {
 const { isConfigured: isFedaPayConfigured } = require('./fedapayService');
 const { addDaysUtc } = require('./periodService');
 const { SUBSCRIPTION_STATUSES, TRIAL_SETTINGS } = require('./constants');
+const { applyLifecycleTransitions } = require('./subscriptionService');
 
 const processSubscriptionLifecycle = async () => {
 	const now = new Date();
@@ -28,24 +29,18 @@ const processSubscriptionLifecycle = async () => {
 	});
 
 	for (const subscription of subscriptions) {
-		const updates = {};
-
-		if (
-			subscription.status === SUBSCRIPTION_STATUSES.TRIALING &&
-			subscription.trialEndsAt &&
-			new Date(subscription.trialEndsAt).getTime() <= now.getTime()
-		) {
-			updates.status = SUBSCRIPTION_STATUSES.GRACE;
-			updates.graceEndsAt = addDaysUtc(subscription.trialEndsAt, TRIAL_SETTINGS.graceDays);
-		}
-
 		if (
 			subscription.status === SUBSCRIPTION_STATUSES.ACTIVE &&
 			subscription.currentPeriodEndAt &&
 			new Date(subscription.currentPeriodEndAt).getTime() <= now.getTime()
 		) {
-			let paymentResult = null;
 			const plan = await getPlanByCode(subscription.planCode);
+			if (!plan || !isPaidPlan(plan)) {
+				await applyLifecycleTransitions(subscription, now);
+				continue;
+			}
+
+			let paymentResult = null;
 			const usage = await getMonthlyUsage(subscription.organizationId);
 			if (plan && isFedaPayConfigured()) {
 				const invoice = await findOrCreateInvoiceForOperation({
@@ -74,24 +69,20 @@ const processSubscriptionLifecycle = async () => {
 			const invoicePaid =
 				String(paymentResult?.invoice?.status || '').trim().toLowerCase() === 'paid';
 			if (!invoicePaid || refreshed?.status !== SUBSCRIPTION_STATUSES.ACTIVE) {
-				updates.status = SUBSCRIPTION_STATUSES.PAST_DUE;
-				updates.graceEndsAt = addDaysUtc(now, TRIAL_SETTINGS.graceDays);
+				await Subscription.updateOne(
+					{ _id: subscription._id },
+					{
+						$set: {
+							status: SUBSCRIPTION_STATUSES.PAST_DUE,
+							graceEndsAt: addDaysUtc(now, TRIAL_SETTINGS.paymentGraceDays),
+						},
+					},
+				);
 			}
+			continue;
 		}
 
-		if (
-			(subscription.status === SUBSCRIPTION_STATUSES.GRACE ||
-				subscription.status === SUBSCRIPTION_STATUSES.PAST_DUE) &&
-			subscription.graceEndsAt &&
-			new Date(subscription.graceEndsAt).getTime() <= now.getTime()
-		) {
-			updates.status = SUBSCRIPTION_STATUSES.SUSPENDED;
-			updates.readOnlySince = now;
-		}
-
-		if (Object.keys(updates).length > 0) {
-			await Subscription.updateOne({ _id: subscription._id }, { $set: updates });
-		}
+		await applyLifecycleTransitions(subscription, now);
 	}
 };
 

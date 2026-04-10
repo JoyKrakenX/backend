@@ -11,6 +11,13 @@ const usageMonthlySchema = new mongoose.Schema(
 			index: true,
 		},
 		periodKey: { type: String, required: true, index: true },
+		periodType: {
+			type: String,
+			enum: ['calendar_month', 'billing_cycle'],
+			default: 'calendar_month',
+		},
+		periodStartAt: { type: Date, default: null },
+		periodEndAt: { type: Date, default: null },
 		counts: {
 			votes: { type: Number, default: 0 },
 			surveys: { type: Number, default: 0 },

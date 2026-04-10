@@ -6,6 +6,14 @@ const Opinion = require('../models/Opinion');
 const Opinion_2 = require('../models/Opinion_2');
 const User = require('../models/User');
 const ChatMessage = require('../models/ChatMessage');
+const { getPublicPlans } = require('../services/billing/planService');
+const { getPublicAddons } = require('../services/billing/addonService');
+const {
+	COMMERCIAL_RULES,
+	ENTERPRISE_TEASER,
+	BILLING_FAQ,
+	BILLING_PRINCIPLES,
+} = require('../services/billing/constants');
 
 const WINDOW_MONTHS = 6;
 const ACTIVE_WINDOW_DAYS = 30;
@@ -110,6 +118,50 @@ exports.getPlatformMetrics = async (_req, res) => {
 		});
 	} catch (error) {
 		console.error('public.getPlatformMetrics:', error);
+		return res.status(500).json({ message: 'Erreur serveur.' });
+	}
+};
+
+exports.getBillingCatalog = async (_req, res) => {
+	try {
+		const plans = await getPublicPlans();
+		const addons = getPublicAddons();
+		return res.status(200).json({
+			currency: 'USD',
+			plans: plans.map((plan) => ({
+				code: plan.code,
+				displayName: plan.displayName,
+				priceMonthlyUsd: plan.priceMonthlyUsd,
+				currency: plan.currency || 'USD',
+				quotas: plan.quotas || {},
+				features: plan.features || {},
+				isPublic: plan.isPublic !== false,
+				isSelectable: plan.isSelectable !== false,
+				recommended: Boolean(plan.recommended),
+				publicOrder: Number(plan.publicOrder || 999),
+				audience: plan.audience || '',
+				description: plan.description || '',
+				highlights: Array.isArray(plan.highlights) ? plan.highlights : [],
+				ctaLabel: plan.ctaLabel || '',
+				priceLabel: plan.priceLabel || null,
+				isQuoteOnly: Boolean(plan.isQuoteOnly),
+				availableAddonCodes: Array.isArray(plan.availableAddonCodes)
+					? plan.availableAddonCodes
+					: [],
+			})),
+			addons,
+			trialPolicy: {
+				entryPlanCode: COMMERCIAL_RULES.entryPlanCode,
+				trialPlanCode: COMMERCIAL_RULES.trialPlanCode,
+				trialDays: COMMERCIAL_RULES.trialDays,
+			},
+			faq: BILLING_FAQ,
+			billingPrinciples: BILLING_PRINCIPLES,
+			commercialRules: COMMERCIAL_RULES,
+			enterpriseTeaser: ENTERPRISE_TEASER,
+		});
+	} catch (error) {
+		console.error('public.getBillingCatalog:', error);
 		return res.status(500).json({ message: 'Erreur serveur.' });
 	}
 };

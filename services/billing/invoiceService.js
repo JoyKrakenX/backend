@@ -2,54 +2,10 @@
 
 const Invoice = require('../../models/Invoice');
 const OrganizationMember = require('../../models/OrganizationMember');
-const { OVERAGE_RULES } = require('./constants');
 const { getPeriodKeyUtc } = require('./periodService');
-const { normalizeQuota } = require('./quotaUtils');
+const { getAddonByCode } = require('./addonService');
 
 const toMoney = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
-
-const calculateOverage = ({ plan, usage, adminsCount = 1 }) => {
-	const quotas = plan?.quotas || {};
-	const counts = usage?.counts || {};
-	const votesUsed = Number(counts.votes || 0);
-	const chatPeakUsed = Number(usage?.chatPeakMax || 0);
-	const adminsCurrent = Number(adminsCount || 0);
-	const adminsPeakUsed = Math.max(
-		Number(usage?.adminsPeak || 0),
-		Number(adminsCurrent || 0),
-	);
-
-	const votesQuota = normalizeQuota(quotas.votes);
-	const chatQuota = normalizeQuota(quotas.chatConcurrent);
-	const adminsQuota = normalizeQuota(quotas.admins);
-
-	const extraVotes = votesQuota === null ? 0 : Math.max(0, votesUsed - votesQuota);
-	const extraChat = chatQuota === null ? 0 : Math.max(0, chatPeakUsed - chatQuota);
-	const extraAdmins =
-		adminsQuota === null ? 0 : Math.max(0, adminsPeakUsed - adminsQuota);
-
-	const votesUsd = toMoney(extraVotes * Number(OVERAGE_RULES.voteUnitUsd || 0));
-	const chatTiers =
-		extraChat <= 0 ? 0 : Math.ceil(extraChat / Number(OVERAGE_RULES.chatTierSize || 500));
-	const chatUsd = toMoney(chatTiers * Number(OVERAGE_RULES.chatTierUsd || 0));
-	const adminsUsd = toMoney(extraAdmins * Number(OVERAGE_RULES.adminUnitUsd || 0));
-	const totalUsd = toMoney(votesUsd + chatUsd + adminsUsd);
-
-	return {
-		votesUsd,
-		chatUsd,
-		adminsUsd,
-		totalUsd,
-		details: {
-			extraVotes,
-			extraChat,
-			extraAdmins,
-			chatTiers,
-			adminsPeakUsed,
-			adminsCurrent,
-		},
-	};
-};
 
 const buildInvoiceKey = ({
 	kind = 'renewal',
@@ -78,57 +34,61 @@ const countOrganizationAdmins = async (organizationId) =>
 		role: { $in: ['owner', 'admin'] },
 	});
 
+const buildRecurringAddonLineItems = (addons = []) => {
+	const lineItems = [];
+	let totalUsd = 0;
+
+	for (const addon of addons) {
+		if (String(addon?.kind || '') !== 'recurring') continue;
+		const definition = getAddonByCode(addon?.code);
+		if (!definition) continue;
+		const quantity = Math.max(1, Number(addon?.quantity || 1));
+		const amountUsd = toMoney(Number(definition.priceUsd || 0) * quantity);
+		totalUsd += amountUsd;
+		lineItems.push({
+			code: `addon_${String(definition.code).toLowerCase()}`,
+			description: definition.displayName,
+			quantity,
+			unitPriceUsd: Number(definition.priceUsd || 0),
+			amountUsd,
+		});
+	}
+
+	return {
+		lineItems,
+		totalUsd: toMoney(totalUsd),
+	};
+};
+
 const buildInvoiceDraft = async ({
 	organizationId,
 	subscription,
 	plan,
-	usage,
 	kind = 'renewal',
 	periodKey = getPeriodKeyUtc(new Date()),
 	targetPlanCode = null,
+	addons = [],
 }) => {
-	const adminsCount = await countOrganizationAdmins(organizationId);
-	const overage = calculateOverage({ plan, usage, adminsCount });
 	const baseAmountUsd = Number(plan?.priceMonthlyUsd || 0);
-	const totalAmountUsd = toMoney(baseAmountUsd + overage.totalUsd);
+	const lineItems = [];
 
-	const lineItems = [
-		{
+	if (baseAmountUsd > 0) {
+		lineItems.push({
 			code: 'base_plan',
 			description: `Abonnement ${plan?.displayName || subscription.planCode}`,
 			quantity: 1,
 			unitPriceUsd: baseAmountUsd,
 			amountUsd: baseAmountUsd,
-		},
-	];
+		});
+	}
 
-	if (overage.votesUsd > 0) {
-		lineItems.push({
-			code: 'overage_votes',
-			description: 'Depassement votes',
-			quantity: overage.details.extraVotes,
-			unitPriceUsd: OVERAGE_RULES.voteUnitUsd,
-			amountUsd: overage.votesUsd,
-		});
-	}
-	if (overage.chatUsd > 0) {
-		lineItems.push({
-			code: 'overage_chat_concurrent',
-			description: 'Depassement simultane chatroom',
-			quantity: overage.details.chatTiers,
-			unitPriceUsd: OVERAGE_RULES.chatTierUsd,
-			amountUsd: overage.chatUsd,
-		});
-	}
-	if (overage.adminsUsd > 0) {
-		lineItems.push({
-			code: 'overage_admins',
-			description: 'Admins supplementaires',
-			quantity: overage.details.extraAdmins,
-			unitPriceUsd: OVERAGE_RULES.adminUnitUsd,
-			amountUsd: overage.adminsUsd,
-		});
-	}
+	const recurringAddons =
+		kind === 'renewal' || kind === 'retry'
+			? buildRecurringAddonLineItems(addons)
+			: { lineItems: [], totalUsd: 0 };
+	lineItems.push(...recurringAddons.lineItems);
+
+	const totalAmountUsd = toMoney(baseAmountUsd + recurringAddons.totalUsd);
 
 	return {
 		organizationId,
@@ -146,10 +106,49 @@ const buildInvoiceDraft = async ({
 		kind,
 		status: 'pending',
 		baseAmountUsd,
-		overage,
 		totalAmountUsd,
 		dueAt: subscription.nextBillingAt || new Date(),
 		lineItems,
+	};
+};
+
+const buildAddonInvoiceDraft = ({
+	organizationId,
+	subscription,
+	addon,
+	quantity = 1,
+	periodKey = getPeriodKeyUtc(new Date()),
+}) => {
+	const safeQuantity = Math.max(1, Math.trunc(Number(quantity || 1)));
+	const unitPriceUsd = Number(addon?.priceUsd || 0);
+	const amountUsd = toMoney(unitPriceUsd * safeQuantity);
+
+	return {
+		organizationId,
+		invoiceKey: null,
+		subscriptionId: subscription._id,
+		periodKey,
+		planCode: String(subscription?.planCode || '').trim().toUpperCase(),
+		currency: 'USD',
+		kind: 'addon',
+		status: 'pending',
+		baseAmountUsd: 0,
+		totalAmountUsd: amountUsd,
+		dueAt: new Date(),
+		lineItems: [
+			{
+				code: `addon_${String(addon.code).toLowerCase()}`,
+				description: addon.displayName,
+				quantity: safeQuantity,
+				unitPriceUsd,
+				amountUsd,
+			},
+		],
+		metadata: {
+			invoiceType: 'addon',
+			addonCode: addon.code,
+			quantity: safeQuantity,
+		},
 	};
 };
 
@@ -159,9 +158,11 @@ const createInvoiceDraft = async (input) => {
 };
 
 module.exports = {
-	calculateOverage,
-	buildInvoiceDraft,
+	toMoney,
 	buildInvoiceKey,
-	createInvoiceDraft,
 	countOrganizationAdmins,
+	buildRecurringAddonLineItems,
+	buildInvoiceDraft,
+	buildAddonInvoiceDraft,
+	createInvoiceDraft,
 };

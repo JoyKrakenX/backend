@@ -7,6 +7,9 @@ const mongoose = require('mongoose');
 const { authorizeAction } = require('../services/billing/entitlementService');
 const { ENTITLEMENT_ACTIONS } = require('../services/billing/constants');
 const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
+const {
+	canManageSurveyByOrganization,
+} = require('../services/surveyAuthorizationService');
 const { getRedisClient } = require('../services/redisService');
 
 const getSurveyModelName = (type) =>
@@ -54,7 +57,7 @@ exports.getChatMessages = async (req, res, next) => {
 		// Vérifier si le sondage existe
 		const survey = await surveyModel
 			.findById(surveyObjectId)
-			.select('theme question isClosed')
+			.select('theme question isClosed organizationId userId')
 			.lean();
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
@@ -122,6 +125,10 @@ exports.getChatMessages = async (req, res, next) => {
 
 		// Compter le total des messages
 		const totalMessages = await ChatMessage.countDocuments(messageFilter);
+		const canModerateChat = await canManageSurveyByOrganization(
+			survey,
+			req.userId
+		);
 		res.status(200).json({
 			messages: enrichedMessages,
 			surveyClosed: Boolean(survey.isClosed),
@@ -140,6 +147,9 @@ exports.getChatMessages = async (req, res, next) => {
 				question: survey.question,
 				isClosed: survey.isClosed,
 				type: type,
+			},
+			capabilities: {
+				canModerateChat: Boolean(canModerateChat),
 			},
 		});
 	} catch (error) {
@@ -275,6 +285,92 @@ exports.sendMessage = async (req, res, next) => {
 		});
 	} catch (error) {
 		console.error('Erreur sendMessage:', error);
+		res.status(500).json({ message: 'Erreur serveur', error: error.message });
+	}
+};
+
+exports.deleteMessage = async (req, res, next) => {
+	try {
+		const { messageId } = req.params;
+
+		if (!messageId || !mongoose.Types.ObjectId.isValid(messageId)) {
+			return res.status(400).json({ message: 'messageId manquant ou invalide' });
+		}
+
+		const chatMessage = await ChatMessage.findById(messageId)
+			.select(
+				'_id surveyId surveyModel isSystemMessage userId userPseudo createdAt replyTo replyToInfo'
+			)
+			.lean();
+
+		if (!chatMessage) {
+			return res.status(404).json({ message: 'Message introuvable' });
+		}
+
+		if (chatMessage.isSystemMessage) {
+			return res.status(403).json({
+				message: 'Les messages systeme ne peuvent pas etre supprimes.',
+			});
+		}
+
+		const surveyModel =
+			chatMessage.surveyModel === 'Survey_2' ? Survey_2 : Survey;
+		const survey = await surveyModel
+			.findById(chatMessage.surveyId)
+			.select('theme question isClosed organizationId userId')
+			.lean();
+
+		if (!survey) {
+			return res.status(404).json({ message: 'Sondage introuvable' });
+		}
+
+		const canModerate = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canModerate) {
+			return res.status(403).json({
+				message:
+					'Vous devez etre owner ou admin de cette organisation pour moderer le chat.',
+			});
+		}
+
+		await Promise.all([
+			ChatMessage.updateMany(
+				{
+					surveyId: chatMessage.surveyId,
+					surveyModel: chatMessage.surveyModel,
+					replyTo: chatMessage._id,
+				},
+				{
+					$set: {
+						replyTo: null,
+						replyToInfo: null,
+					},
+				}
+			),
+			ChatMessage.deleteOne({ _id: chatMessage._id }),
+		]);
+
+		const totalMessages = await ChatMessage.countDocuments({
+			surveyId: chatMessage.surveyId,
+			surveyModel: chatMessage.surveyModel,
+		});
+
+		const io = req.app.get('io');
+		if (io) {
+			io.to(`survey-${String(chatMessage.surveyId)}`).emit('messageDeleted', {
+				messageId: String(chatMessage._id),
+				surveyId: String(chatMessage.surveyId),
+				totalMessages,
+			});
+		}
+
+		res.status(200).json({
+			message: 'Message supprime',
+			messageId: String(chatMessage._id),
+			surveyId: String(chatMessage.surveyId),
+			totalMessages,
+		});
+	} catch (error) {
+		console.error('Erreur deleteMessage:', error);
 		res.status(500).json({ message: 'Erreur serveur', error: error.message });
 	}
 };

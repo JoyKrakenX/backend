@@ -27,6 +27,13 @@ router.post(
 	billingController.createCheckout,
 );
 router.post(
+	'/addons/checkout',
+	sensitiveRateLimit,
+	requireAuth,
+	activeOrganization,
+	billingController.createAddonCheckout,
+);
+router.post(
 	'/retry-payment',
 	sensitiveRateLimit,
 	requireAuth,

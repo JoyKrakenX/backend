@@ -6,8 +6,7 @@ const User = require('../models/User');
 const Organization = require('../models/Organization');
 const OrganizationMember = require('../models/OrganizationMember');
 const Subscription = require('../models/Subscription');
-const { TRIAL_SETTINGS, SUBSCRIPTION_STATUSES } = require('./billing/constants');
-const { addDaysUtc, addMonthsUtc } = require('./billing/periodService');
+const { ensureDefaultSubscription } = require('./billing/subscriptionService');
 
 const toObjectId = (id) =>
 	mongoose.Types.ObjectId.isValid(String(id || ''))
@@ -36,20 +35,8 @@ const buildPersonalOrganizationName = (user) => {
 const ensureTrialSubscriptionForOrganization = async (organizationId, now = new Date()) => {
 	const existing = await Subscription.findOne({ organizationId }).lean();
 	if (existing) return existing;
-
-	const trialEndsAt = addDaysUtc(now, TRIAL_SETTINGS.durationDays);
-	const periodEndAt = addMonthsUtc(now, 1);
-	const created = await Subscription.create({
-		organizationId,
-		planCode: TRIAL_SETTINGS.planCode,
-		status: SUBSCRIPTION_STATUSES.TRIALING,
-		trialStartedAt: now,
-		trialEndsAt,
-		currentPeriodStartAt: now,
-		currentPeriodEndAt: periodEndAt,
-		nextBillingAt: periodEndAt,
-	});
-	return created.toObject();
+	const created = await ensureDefaultSubscription(organizationId, now);
+	return created?.toObject ? created.toObject() : created;
 };
 
 const ensureOwnerMembership = async (organizationId, ownerUserId) => {

@@ -5,10 +5,19 @@ const Organization = require('../../models/Organization');
 const OrganizationMember = require('../../models/OrganizationMember');
 const { isBillingExemptEmail } = require('../superAdminService');
 const { getPlanByCode } = require('./planService');
-const { getOrganizationSubscription } = require('./subscriptionService');
+const {
+	getOrganizationSubscription,
+	getEffectivePlanCode,
+} = require('./subscriptionService');
 const { getMonthlyUsage } = require('./usageService');
 const { normalizeQuota, isFiniteQuota } = require('./quotaUtils');
 const { logSecurityEvent } = require('../securityAuditService');
+const {
+	getActiveAddonsForSubscription,
+	mergePlanQuotasWithAddons,
+	getAvailableAddonsForPlan,
+	summarizeAddons,
+} = require('./addonService');
 const {
 	ENTITLEMENT_ACTIONS,
 	ENTITLEMENT_DENY_CODES,
@@ -39,7 +48,6 @@ const canWriteWithStatus = (status) =>
 	[
 		SUBSCRIPTION_STATUSES.TRIALING,
 		SUBSCRIPTION_STATUSES.ACTIVE,
-		SUBSCRIPTION_STATUSES.GRACE,
 		SUBSCRIPTION_STATUSES.PAST_DUE,
 	].includes(String(status || ''));
 
@@ -81,10 +89,138 @@ const isBillingExemptForOwnedOrganization = async ({
 
 const computeUsageSnapshot = async ({ organizationId, explicitUsage }) => {
 	if (explicitUsage) return explicitUsage;
-	return (await getMonthlyUsage(organizationId)) || {
-		counts: { votes: 0, surveys: 0, exports: 0 },
-		chatPeakMax: 0,
-		adminsPeak: 1,
+	return (
+		(await getMonthlyUsage(organizationId)) || {
+			counts: { votes: 0, surveys: 0, exports: 0 },
+			chatPeakMax: 0,
+			adminsPeak: 1,
+			adminsCurrent: 1,
+		}
+	);
+};
+
+const buildRemaining = (quota, consumed) => {
+	const normalizedQuota = normalizeQuota(quota);
+	if (normalizedQuota === null) return null;
+	return Math.max(0, normalizedQuota - toSafeCount(consumed));
+};
+
+const buildNextAction = ({ effectivePlanCode, metricKey }) => {
+	const availableAddons = getAvailableAddonsForPlan(effectivePlanCode);
+	if (metricKey === 'votes') {
+		const responseAddon = availableAddons.find((entry) =>
+			String(entry.code || '').includes('RESPONSE_PACK'),
+		);
+		if (responseAddon) {
+			return {
+				type: 'addon',
+				addonCode: responseAddon.code,
+				label: responseAddon.displayName,
+			};
+		}
+	}
+
+	if (metricKey === 'admins') {
+		const adminAddon = availableAddons.find((entry) =>
+			String(entry.code || '').includes('ADMIN_PACK'),
+		);
+		if (adminAddon) {
+			return {
+				type: 'addon',
+				addonCode: adminAddon.code,
+				label: adminAddon.displayName,
+			};
+		}
+	}
+
+	if (metricKey === 'chatConcurrent') {
+		const liveAddon = availableAddons.find((entry) =>
+			String(entry.code || '').includes('LIVE_EVENT_BOOST'),
+		);
+		if (liveAddon) {
+			return {
+				type: 'addon',
+				addonCode: liveAddon.code,
+				label: liveAddon.displayName,
+			};
+		}
+	}
+
+	return {
+		type: 'upgrade',
+		label: 'Passer au plan superieur',
+	};
+};
+
+const resolveEntitlementContext = async ({
+	organizationId,
+	userId,
+	userEmail,
+	plan: explicitPlan = null,
+	basePlan: explicitBasePlan = null,
+	subscription: explicitSubscription = null,
+	usage: explicitUsage = null,
+	role: explicitRole = null,
+}) => {
+	const identity = await getUserIdentity({ userId, userEmail });
+	const role = explicitRole || (await getOrganizationRole(organizationId, userId));
+	const billingExempt = await isBillingExemptForOwnedOrganization({
+		organizationId,
+		userId,
+		identity,
+	});
+
+	const subscription =
+		explicitSubscription || (await getOrganizationSubscription(organizationId));
+	const effectivePlanCode = getEffectivePlanCode(subscription);
+	const basePlanCode = String(subscription?.planCode || '').trim().toUpperCase();
+	const basePlan =
+		explicitBasePlan ||
+		(explicitPlan && explicitPlan.code === basePlanCode ? explicitPlan : null) ||
+		(await getPlanByCode(basePlanCode));
+	const effectivePlan =
+		explicitPlan || (effectivePlanCode ? await getPlanByCode(effectivePlanCode) : null);
+	const usage = await computeUsageSnapshot({
+		organizationId,
+		explicitUsage,
+	});
+	const adminsCurrent =
+		Number.isFinite(Number(explicitUsage?.adminsCurrent))
+			? Math.max(0, Math.trunc(Number(explicitUsage.adminsCurrent)))
+			: await OrganizationMember.countDocuments({
+					organizationId,
+					role: { $in: ['owner', 'admin'] },
+			  });
+	const addons =
+		subscription?._id
+			? await getActiveAddonsForSubscription({
+					organizationId,
+					subscriptionId: subscription._id,
+			  })
+			: [];
+	const effectiveQuotas = mergePlanQuotasWithAddons(effectivePlan?.quotas || {}, addons);
+	const resolvedRole = billingExempt && !role ? 'owner' : role;
+	const normalizedUsage = {
+		...(usage || {}),
+		counts: usage?.counts || { votes: 0, surveys: 0, exports: 0 },
+		chatPeakMax: Number(usage?.chatPeakMax || 0),
+		adminsPeak: Number(usage?.adminsPeak || adminsCurrent || 1),
+		adminsCurrent,
+	};
+
+	return {
+		identity,
+		role: resolvedRole,
+		billingExempt,
+		subscription,
+		basePlan,
+		effectivePlan,
+		effectivePlanCode,
+		basePlanCode,
+		usage: normalizedUsage,
+		addons,
+		addonsSummary: summarizeAddons(addons),
+		effectiveQuotas,
 	};
 };
 
@@ -94,6 +230,7 @@ const authorizeAction = async ({
 	userId,
 	userEmail,
 	plan: explicitPlan = null,
+	basePlan: explicitBasePlan = null,
 	subscription: explicitSubscription = null,
 	usage: explicitUsage = null,
 	role: explicitRole = null,
@@ -115,8 +252,6 @@ const authorizeAction = async ({
 		return buildDenied(code, message, extras);
 	};
 
-	const identity = await getUserIdentity({ userId, userEmail });
-
 	if (!organizationId) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.NO_ORG,
@@ -124,82 +259,85 @@ const authorizeAction = async ({
 		);
 	}
 
-	const role =
-		explicitRole || (await getOrganizationRole(organizationId, userId));
-	const billingExempt = await isBillingExemptForOwnedOrganization({
-		organizationId,
-		userId,
-		identity,
-	});
-	const resolvedRole = billingExempt && !role ? 'owner' : role;
 	const isManagementAction =
 		action === ENTITLEMENT_ACTIONS.CREATE_SURVEY ||
 		action === ENTITLEMENT_ACTIONS.MANAGE_ADMINS;
-	if (isManagementAction && !['owner', 'admin'].includes(String(resolvedRole || ''))) {
+
+	const context = await resolveEntitlementContext({
+		organizationId,
+		userId,
+		userEmail,
+		plan: explicitPlan,
+		basePlan: explicitBasePlan,
+		subscription: explicitSubscription,
+		usage: explicitUsage,
+		role: explicitRole,
+	});
+
+	if (isManagementAction && !['owner', 'admin'].includes(String(context.role || ''))) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.FORBIDDEN,
 			'Acces reserve aux administrateurs de l organisation.',
 		);
 	}
 
-	if (billingExempt) {
+	if (context.billingExempt) {
 		return buildAllowed({
-			plan: explicitPlan || null,
-			subscription: explicitSubscription || null,
-			usage: explicitUsage || null,
-			role: resolvedRole || 'owner',
+			plan: context.effectivePlan || explicitPlan || null,
+			basePlan: context.basePlan || null,
+			subscription: context.subscription || explicitSubscription || null,
+			usage: context.usage || explicitUsage || null,
+			role: context.role || 'owner',
 			isSuperAdmin: false,
 			billingExempt: true,
 			billingExemptScope: 'owner_only',
-			overage: false,
+			addons: context.addonsSummary || [],
+			effectiveQuotas: context.effectiveQuotas || {},
 		});
 	}
 
-	const subscription =
-		explicitSubscription || (await getOrganizationSubscription(organizationId));
-	if (!subscription) {
+	if (!context.subscription) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.NO_SUBSCRIPTION,
 			'Abonnement introuvable.',
 		);
 	}
 
-	if (!canWriteWithStatus(subscription.status)) {
+	if (!canWriteWithStatus(context.subscription.status)) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.READ_ONLY,
 			'Organisation en mode lecture seule. Veuillez regulariser le paiement.',
 			{
-				subscription,
+				subscription: context.subscription,
 			},
 		);
 	}
 
-	const plan = explicitPlan || (await getPlanByCode(subscription.planCode));
-	if (!plan) {
+	if (!context.effectivePlan) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.NO_SUBSCRIPTION,
 			'Plan abonnement introuvable.',
 			{
-				subscription,
+				subscription: context.subscription,
 			},
 		);
 	}
 
-	const usage = await computeUsageSnapshot({
-		organizationId,
-		explicitUsage,
-	});
-
-	const quotas = plan.quotas || {};
-	const counts = usage.counts || {};
+	const quotas = context.effectiveQuotas || {};
+	const counts = context.usage.counts || {};
 	const resultPayload = {
-		plan,
-		subscription,
-		usage,
-		role: resolvedRole,
+		plan: context.effectivePlan,
+		basePlan: context.basePlan,
+		effectivePlanCode: context.effectivePlanCode,
+		basePlanCode: context.basePlanCode,
+		subscription: context.subscription,
+		usage: context.usage,
+		role: context.role,
 		isSuperAdmin: false,
 		billingExempt: false,
 		billingExemptScope: null,
+		addons: context.addonsSummary,
+		effectiveQuotas: quotas,
 	};
 
 	if (action === ENTITLEMENT_ACTIONS.CREATE_SURVEY) {
@@ -207,59 +345,111 @@ const authorizeAction = async ({
 		if (isFiniteQuota(surveysQuota) && toSafeCount(counts.surveys) >= surveysQuota) {
 			return denyWithAudit(
 				ENTITLEMENT_DENY_CODES.SURVEYS_LIMIT_REACHED,
-				'Quota mensuel de sondages atteint.',
-				resultPayload,
+				'Capacite de campagnes atteinte pour ce cycle.',
+				{
+					...resultPayload,
+					nextAction: buildNextAction({
+						effectivePlanCode: context.effectivePlanCode,
+						metricKey: 'surveys',
+					}),
+				},
 			);
 		}
-		return buildAllowed({ ...resultPayload, overage: false });
+		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.EXPORT) {
-		if (plan.features?.exportsEnabled === false) {
+		if (context.effectivePlan.features?.exportsEnabled === false) {
 			return denyWithAudit(
 				ENTITLEMENT_DENY_CODES.FEATURE_DISABLED,
-				'Fonction export indisponible sur ce plan.',
-				resultPayload,
+				'Les exports avances ne sont pas disponibles sur ce plan.',
+				{
+					...resultPayload,
+					nextAction: buildNextAction({
+						effectivePlanCode: context.effectivePlanCode,
+						metricKey: 'exports',
+					}),
+				},
 			);
 		}
 		const exportsQuota = normalizeQuota(quotas.exports);
 		if (isFiniteQuota(exportsQuota) && toSafeCount(counts.exports) >= exportsQuota) {
 			return denyWithAudit(
 				ENTITLEMENT_DENY_CODES.EXPORTS_LIMIT_REACHED,
-				'Quota mensuel des exports atteint.',
-				resultPayload,
+				'Capacite d exports atteinte pour ce cycle.',
+				{
+					...resultPayload,
+					nextAction: buildNextAction({
+						effectivePlanCode: context.effectivePlanCode,
+						metricKey: 'exports',
+					}),
+				},
 			);
 		}
-		return buildAllowed({ ...resultPayload, overage: false });
+		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.JOIN_CHAT) {
-		if (plan.features?.chatEnabled === false) {
+		if (context.effectivePlan.features?.chatEnabled === false) {
 			return denyWithAudit(
 				ENTITLEMENT_DENY_CODES.FEATURE_DISABLED,
-				'Fonction chat indisponible sur ce plan.',
+				'Le chat n est pas disponible sur ce plan.',
 				resultPayload,
 			);
 		}
-		return buildAllowed({ ...resultPayload, overage: false });
+		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.MANAGE_ADMINS) {
 		const adminLimit = normalizeQuota(quotas.admins);
-		const adminsCount = toSafeCount(usage.adminsPeak);
-		const overage = isFiniteQuota(adminLimit) && adminsCount >= adminLimit;
-		return buildAllowed({ ...resultPayload, overage });
+		const adminsCount = Math.max(
+			toSafeCount(context.usage.adminsPeak),
+			toSafeCount(context.usage.adminsCurrent),
+		);
+		if (isFiniteQuota(adminLimit) && adminsCount >= adminLimit) {
+			return denyWithAudit(
+				ENTITLEMENT_DENY_CODES.ADMINS_LIMIT_REACHED,
+				'Capacite admins atteinte pour ce cycle.',
+				{
+					...resultPayload,
+					remaining: {
+						admins: buildRemaining(adminLimit, adminsCount),
+					},
+					nextAction: buildNextAction({
+						effectivePlanCode: context.effectivePlanCode,
+						metricKey: 'admins',
+					}),
+				},
+			);
+		}
+		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.VOTE) {
 		const voteLimit = normalizeQuota(quotas.votes);
-		const overage = isFiniteQuota(voteLimit) && toSafeCount(counts.votes) >= voteLimit;
-		return buildAllowed({ ...resultPayload, overage });
+		if (isFiniteQuota(voteLimit) && toSafeCount(counts.votes) >= voteLimit) {
+			return denyWithAudit(
+				ENTITLEMENT_DENY_CODES.RESPONSES_LIMIT_REACHED,
+				'Capacite de participation atteinte pour ce cycle.',
+				{
+					...resultPayload,
+					remaining: {
+						votes: buildRemaining(voteLimit, counts.votes),
+					},
+					nextAction: buildNextAction({
+						effectivePlanCode: context.effectivePlanCode,
+						metricKey: 'votes',
+					}),
+				},
+			);
+		}
+		return buildAllowed(resultPayload);
 	}
 
-	return buildAllowed({ ...resultPayload, overage: false });
+	return buildAllowed(resultPayload);
 };
 
 module.exports = {
 	authorizeAction,
+	resolveEntitlementContext,
 };

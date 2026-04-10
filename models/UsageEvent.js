@@ -11,6 +11,13 @@ const usageEventSchema = new mongoose.Schema(
 			index: true,
 		},
 		periodKey: { type: String, required: true, index: true },
+		periodType: {
+			type: String,
+			enum: ['calendar_month', 'billing_cycle'],
+			default: 'calendar_month',
+		},
+		periodStartAt: { type: Date, default: null },
+		periodEndAt: { type: Date, default: null },
 		action: {
 			type: String,
 			enum: ['vote', 'survey_create', 'export', 'chat_peak', 'admin_peak_sync'],

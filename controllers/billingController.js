@@ -5,12 +5,21 @@ const { z } = require('zod');
 const Invoice = require('../models/Invoice');
 const PaymentEvent = require('../models/PaymentEvent');
 const { getPublicPlans, getPlanByCode } = require('../services/billing/planService');
-const { getOrganizationSubscription } = require('../services/billing/subscriptionService');
+const {
+	getOrganizationSubscription,
+	getEffectivePlanCode,
+} = require('../services/billing/subscriptionService');
 const { getMonthlyUsage } = require('../services/billing/usageService');
-const { countOrganizationAdmins, calculateOverage } = require('../services/billing/invoiceService');
+const {
+	countOrganizationAdmins,
+	buildRecurringAddonLineItems,
+} = require('../services/billing/invoiceService');
 const { createFxQuote, normalizeQuoteCurrency } = require('../services/billing/fxService');
-const { retrieveTransaction, verifyWebhookSignature, isConfigured: isFedaPayConfigured } = require('../services/billing/fedapayService');
-const { getPeriodKeyUtc } = require('../services/billing/periodService');
+const {
+	retrieveTransaction,
+	verifyWebhookSignature,
+	isConfigured: isFedaPayConfigured,
+} = require('../services/billing/fedapayService');
 const { normalizeQuota } = require('../services/billing/quotaUtils');
 const {
 	findOrCreateInvoiceForOperation,
@@ -19,93 +28,59 @@ const {
 	validateVerifiedTransactionAgainstInvoice,
 	markInvoicePaidAndActivateSubscription,
 	markInvoiceFailedAndPastDue,
+	createAddonInvoiceForCheckout,
 } = require('../services/billing/paymentOrchestratorService');
 const { logSecurityEvent } = require('../services/securityAuditService');
 const {
 	COMMERCIAL_RULES,
 	ENTERPRISE_TEASER,
+	BILLING_FAQ,
+	BILLING_PRINCIPLES,
 	SUBSCRIPTION_STATUSES,
+	PLAN_CODES,
 } = require('../services/billing/constants');
 const { isBillingExemptEmail } = require('../services/superAdminService');
-
-const TRIALING_CHECKOUT_LOCK_MESSAGE =
-	"Essai gratuit en cours: la facturation est verrouillee jusqu'a la fin de l'essai.";
+const {
+	getPublicAddons,
+	getAvailableAddonsForPlan,
+	getActiveAddonsForSubscription,
+	summarizeAddons,
+	canPurchaseAddon,
+	normalizeAddonQuantity,
+	mergePlanQuotasWithAddons,
+} = require('../services/billing/addonService');
+const { resolveEntitlementContext } = require('../services/billing/entitlementService');
 
 const BILLING_ERROR_CODES = Object.freeze({
-	TRIALING_LOCKED: 'BILLING_TRIALING_LOCKED',
 	PROVIDER_AMOUNT_CAP: 'BILLING_PROVIDER_AMOUNT_CAP',
 	PROVIDER_UNAVAILABLE: 'BILLING_PROVIDER_UNAVAILABLE',
 	CHECKOUT_INIT_FAILED: 'BILLING_CHECKOUT_INIT_FAILED',
+	ADDON_NOT_ALLOWED: 'BILLING_ADDON_NOT_ALLOWED',
+	ADDON_INVALID_QUANTITY: 'BILLING_ADDON_INVALID_QUANTITY',
 });
 
 const BILLING_ERROR_MESSAGES = Object.freeze({
-	[BILLING_ERROR_CODES.TRIALING_LOCKED]: TRIALING_CHECKOUT_LOCK_MESSAGE,
 	[BILLING_ERROR_CODES.PROVIDER_AMOUNT_CAP]:
 		'Le montant depasse le plafond autorise par le fournisseur de paiement.',
 	[BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE]:
 		'Service de paiement indisponible. Reessayez plus tard.',
 	[BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED]: 'Impossible de lancer le checkout.',
+	[BILLING_ERROR_CODES.ADDON_NOT_ALLOWED]:
+		"Cet add-on n'est pas disponible pour votre plan actuel.",
+	[BILLING_ERROR_CODES.ADDON_INVALID_QUANTITY]:
+		'Quantite addon invalide pour cette commande.',
 });
 
 const BILLING_ERROR_STATUS_BY_CODE = Object.freeze({
-	[BILLING_ERROR_CODES.TRIALING_LOCKED]: 409,
 	[BILLING_ERROR_CODES.PROVIDER_AMOUNT_CAP]: 422,
 	[BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE]: 503,
 	[BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED]: 500,
+	[BILLING_ERROR_CODES.ADDON_NOT_ALLOWED]: 422,
+	[BILLING_ERROR_CODES.ADDON_INVALID_QUANTITY]: 400,
 });
 
 const PROVIDER_AMOUNT_CAP_PATTERN =
 	/montant maximum|maximum amount|max(?:imum)?(?:\s+de)?\s+transactions?/i;
-
-const isKnownBillingErrorCode = (code) =>
-	Object.values(BILLING_ERROR_CODES).includes(String(code || '').trim());
-
-const buildTrialingCheckoutError = (subscription = null) => ({
-	status: BILLING_ERROR_STATUS_BY_CODE[BILLING_ERROR_CODES.TRIALING_LOCKED],
-	body: {
-		message: BILLING_ERROR_MESSAGES[BILLING_ERROR_CODES.TRIALING_LOCKED],
-		code: BILLING_ERROR_CODES.TRIALING_LOCKED,
-		details: {
-			subscriptionStatus: SUBSCRIPTION_STATUSES.TRIALING,
-			trialEndsAt: subscription?.trialEndsAt || null,
-		},
-	},
-});
-
-const normalizeCheckoutError = (error) => {
-	const details =
-		error?.details && typeof error.details === 'object' && !Array.isArray(error.details)
-			? error.details
-			: null;
-	const rawCode = String(error?.code || '').trim();
-	const rawMessage = String(error?.message || '').trim();
-
-	let code = BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED;
-	if (isKnownBillingErrorCode(rawCode)) {
-		code = rawCode;
-	} else if (PROVIDER_AMOUNT_CAP_PATTERN.test(rawMessage)) {
-		code = BILLING_ERROR_CODES.PROVIDER_AMOUNT_CAP;
-	} else if (
-		/FedaPay non configure|Open Exchange Rates non configure|Taux FX indisponible/i.test(
-			rawMessage,
-		)
-	) {
-		code = BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE;
-	} else if (/essai gratuit en cours|free trial/i.test(rawMessage)) {
-		code = BILLING_ERROR_CODES.TRIALING_LOCKED;
-	}
-
-	const status = BILLING_ERROR_STATUS_BY_CODE[code] || 500;
-
-	const body = {
-		message: BILLING_ERROR_MESSAGES[code] || BILLING_ERROR_MESSAGES[BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED],
-		code,
-	};
-	if (details) {
-		body.details = details;
-	}
-	return { status, body };
-};
 
 const checkoutSchema = z.object({
 	planCode: z.string().trim().min(1).max(80).optional(),
@@ -120,45 +95,52 @@ const retrySchema = z.object({
 	savePaymentMethod: z.boolean().optional(),
 });
 
+const addonCheckoutSchema = z.object({
+	addonCode: z.string().trim().min(1).max(80),
+	quantity: z.number().int().min(1).max(10).optional(),
+});
+
 const toMoney = (value) =>
 	Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 
-const buildMetrics = ({ plan, usage, adminsCount }) => {
+const buildMetrics = ({ quotas = {}, plan = null, usage, adminsCount }) => {
+	const resolvedQuotas =
+		quotas && Object.keys(quotas).length ? quotas : (plan?.quotas || {});
 	const counts = usage?.counts || {};
-	const quotas = plan?.quotas || {};
-
-	const metrics = [
+	const source = [
 		{
 			key: 'votes',
-			label: 'Votes',
+			label: 'Reponses',
 			consumed: Number(counts.votes || 0),
-			quota: quotas.votes ?? null,
+			quota: resolvedQuotas.votes ?? null,
 		},
 		{
 			key: 'surveys',
-			label: 'Sondages',
+			label: 'Campagnes',
 			consumed: Number(counts.surveys || 0),
-			quota: quotas.surveys ?? null,
+			quota: resolvedQuotas.surveys ?? null,
 		},
 		{
 			key: 'exports',
 			label: 'Exports',
 			consumed: Number(counts.exports || 0),
-			quota: quotas.exports ?? null,
+			quota: resolvedQuotas.exports ?? null,
 		},
 		{
 			key: 'chatConcurrent',
-			label: 'Simultane chatroom',
+			label: 'Simultanes live',
 			consumed: Number(usage?.chatPeakMax || 0),
-			quota: quotas.chatConcurrent ?? null,
+			quota: resolvedQuotas.chatConcurrent ?? null,
 		},
 		{
 			key: 'admins',
 			label: 'Admins',
 			consumed: Number(adminsCount || 0),
-			quota: quotas.admins ?? null,
+			quota: resolvedQuotas.admins ?? null,
 		},
-	].map((metric) => {
+	];
+
+	return source.map((metric) => {
 		const finiteQuota = normalizeQuota(metric.quota);
 		const percent =
 			finiteQuota === null || finiteQuota <= 0 ?
@@ -173,12 +155,12 @@ const buildMetrics = ({ plan, usage, adminsCount }) => {
 		return {
 			...metric,
 			quota: finiteQuota,
+			remaining:
+				finiteQuota === null ? null : Math.max(0, finiteQuota - Number(metric.consumed || 0)),
 			percent,
 			alertLevel,
 		};
 	});
-
-	return metrics;
 };
 
 exports.__test = {
@@ -193,13 +175,20 @@ const buildPaymentInstrumentPayload = (subscription) => ({
 	expYear: subscription?.provider?.expYear || null,
 });
 
-const buildCheckoutResponse = (invoice, checkoutData, mode, paymentInstrument = null) => ({
+const buildCheckoutResponse = (
+	invoice,
+	checkoutData,
+	mode,
+	paymentInstrument = null,
+) => ({
 	invoiceId: String(invoice._id),
+	invoiceKind: invoice.kind,
 	provider: 'fedapay',
 	txRef: invoice.provider?.txRef || null,
 	checkoutLink: checkoutData?.link || invoice.provider?.checkoutLink || null,
 	invoicePlanCode: invoice.planCode || null,
 	targetPlanCode: invoice?.metadata?.targetPlanCode || null,
+	addonCode: invoice?.metadata?.addonCode || null,
 	amountUsd: toMoney(invoice.totalAmountUsd),
 	chargeAmount: Number(invoice?.charge?.amount || 0),
 	chargeCurrency: invoice?.charge?.currency || invoice?.fx?.quoteCurrency || 'XOF',
@@ -293,13 +282,111 @@ const settlePendingInvoiceFromTransaction = async ({ invoice, transaction, trigg
 	return { settled: true, status: 'paid' };
 };
 
+const normalizeCheckoutError = (error) => {
+	const details =
+		error?.details && typeof error.details === 'object' && !Array.isArray(error.details)
+			? error.details
+			: null;
+	const rawCode = String(error?.code || '').trim();
+	const rawMessage = String(error?.message || '').trim();
+
+	let code = BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED;
+	if (rawCode && rawCode in BILLING_ERROR_STATUS_BY_CODE) {
+		code = rawCode;
+	} else if (PROVIDER_AMOUNT_CAP_PATTERN.test(rawMessage)) {
+		code = BILLING_ERROR_CODES.PROVIDER_AMOUNT_CAP;
+	} else if (
+		/FedaPay non configure|Open Exchange Rates non configure|Taux FX indisponible/i.test(
+			rawMessage,
+		)
+	) {
+		code = BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE;
+	}
+
+	const status = BILLING_ERROR_STATUS_BY_CODE[code] || 500;
+
+	const body = {
+		message:
+			BILLING_ERROR_MESSAGES[code] ||
+			BILLING_ERROR_MESSAGES[BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED],
+		code,
+	};
+	if (details) body.details = details;
+	return { status, body };
+};
+
+const getRecommendedUpgradePlanCode = (planCode) => {
+	const normalizedPlanCode = String(planCode || '').trim().toUpperCase();
+	if (normalizedPlanCode === PLAN_CODES.FREE) return PLAN_CODES.STARTER;
+	if (normalizedPlanCode === PLAN_CODES.STARTER) return PLAN_CODES.GROWTH;
+	if (normalizedPlanCode === PLAN_CODES.GROWTH) return PLAN_CODES.SCALE;
+	return PLAN_CODES.SCALE;
+};
+
+const buildNextBestAction = ({ subscription, metrics = [] }) => {
+	const effectivePlanCode = getEffectivePlanCode(subscription);
+
+	if (String(subscription?.status || '') === SUBSCRIPTION_STATUSES.TRIALING) {
+		return {
+			type: 'upgrade',
+			label: 'Convertir mon essai',
+			recommendedPlanCode: PLAN_CODES.GROWTH,
+		};
+	}
+
+	if (String(subscription?.planCode || '').trim().toUpperCase() === PLAN_CODES.FREE) {
+		return {
+			type: 'upgrade',
+			label: 'Passer a Starter',
+			recommendedPlanCode: PLAN_CODES.STARTER,
+		};
+	}
+
+	const mostAdvanced = [...metrics]
+		.filter((metric) => Number(metric.alertLevel || 0) >= 90)
+		.sort((left, right) => Number(right.alertLevel || 0) - Number(left.alertLevel || 0))[0];
+	if (mostAdvanced) {
+		return {
+			type: 'upgrade',
+			label: `Augmenter la capacite ${mostAdvanced.label.toLowerCase()}`,
+			metricKey: mostAdvanced.key,
+			recommendedPlanCode: getRecommendedUpgradePlanCode(effectivePlanCode),
+		};
+	}
+
+	return null;
+};
+
+const serializeCatalogPlan = (plan) => ({
+	code: plan.code,
+	displayName: plan.displayName,
+	priceMonthlyUsd: plan.priceMonthlyUsd,
+	currency: plan.currency || 'USD',
+	quotas: plan.quotas || {},
+	features: plan.features || {},
+	isPublic: plan.isPublic !== false,
+	isSelectable: plan.isSelectable !== false,
+	recommended: Boolean(plan.recommended),
+	publicOrder: Number(plan.publicOrder || 999),
+	audience: plan.audience || '',
+	description: plan.description || '',
+	highlights: Array.isArray(plan.highlights) ? plan.highlights : [],
+	ctaLabel: plan.ctaLabel || '',
+	availableAddonCodes: Array.isArray(plan.availableAddonCodes) ? plan.availableAddonCodes : [],
+	priceLabel: plan.priceLabel || null,
+	isQuoteOnly: Boolean(plan.isQuoteOnly),
+});
+
 exports.getPlans = async (_req, res) => {
 	try {
 		const plans = await getPublicPlans();
 		return res.status(200).json({
 			currency: 'USD',
-			plans,
+			plans: plans.map(serializeCatalogPlan),
+			addons: getPublicAddons(),
 			enterpriseTeaser: ENTERPRISE_TEASER,
+			faq: BILLING_FAQ,
+			billingPrinciples: BILLING_PRINCIPLES,
 			commercialRules: COMMERCIAL_RULES,
 		});
 	} catch (error) {
@@ -314,22 +401,56 @@ exports.getSummary = async (req, res) => {
 		const billingExempt =
 			isBillingExemptEmail(req.userEmail || req.user?.email) &&
 			String(organization?.ownerUserId || '') === String(req.userId || '');
-		const subscription = await getOrganizationSubscription(organization._id);
-		const plan = await getPlanByCode(subscription.planCode);
+		const context = await resolveEntitlementContext({
+			organizationId: organization._id,
+			userId: req.userId,
+			userEmail: req.userEmail || req.user?.email,
+			role: req.activeOrganizationRole,
+		});
+		const subscription = context.subscription || (await getOrganizationSubscription(organization._id));
+		const effectivePlanCode = getEffectivePlanCode(subscription);
+		const basePlan = context.basePlan || (await getPlanByCode(subscription.planCode));
+		const effectivePlan =
+			context.effectivePlan || (effectivePlanCode ? await getPlanByCode(effectivePlanCode) : null);
+		const activeAddons = context.addonsSummary || summarizeAddons(
+			await getActiveAddonsForSubscription({
+				organizationId: organization._id,
+				subscriptionId: subscription._id,
+			}),
+		);
 		const usage =
-			(await getMonthlyUsage(organization._id)) || {
+			context.usage ||
+			((await getMonthlyUsage(organization._id)) || {
 				counts: { votes: 0, surveys: 0, exports: 0 },
 				chatPeakMax: 0,
 				adminsPeak: 1,
-			};
+				adminsCurrent: 1,
+			});
 		const adminsCount = await countOrganizationAdmins(organization._id);
-		const metrics = buildMetrics({ plan, usage, adminsCount });
-		const overageEstimate = calculateOverage({ plan, usage, adminsCount });
+		const effectiveQuotas =
+			context.effectiveQuotas || mergePlanQuotasWithAddons(effectivePlan?.quotas || {}, []);
+		const metrics = buildMetrics({
+			quotas: effectiveQuotas,
+			usage,
+			adminsCount,
+		});
+		const recurringAddonSummary = buildRecurringAddonLineItems(
+			Array.isArray(activeAddons)
+				? activeAddons.map((addon) => ({
+						code: addon.code,
+						kind: addon.kind,
+						quantity: addon.quantity,
+				  }))
+				: [],
+		);
 
 		const paymentCurrency = normalizeQuoteCurrency(
 			organization?.paymentCurrency || organization?.currency || 'XOF',
 		);
-		const totalEstimateUsd = toMoney(Number(plan?.priceMonthlyUsd || 0) + Number(overageEstimate?.totalUsd || 0));
+		const totalEstimateUsd = toMoney(
+			Number(effectivePlan?.priceMonthlyUsd || 0) +
+				Number(recurringAddonSummary?.totalUsd || 0),
+		);
 		let billingQuotePreview = {
 			baseCurrency: 'USD',
 			paymentCurrency,
@@ -359,6 +480,8 @@ exports.getSummary = async (req, res) => {
 			billingQuotePreview.error = 'FX_UNAVAILABLE';
 		}
 
+		const availableAddons = getAvailableAddonsForPlan(effectivePlanCode);
+
 		return res.status(200).json({
 			organization: {
 				_id: organization._id,
@@ -371,11 +494,14 @@ exports.getSummary = async (req, res) => {
 			entitlement: {
 				billingExempt,
 				billingExemptScope: billingExempt ? 'owner_only' : null,
+				canManageBilling: ['owner', 'admin'].includes(String(req.activeOrganizationRole || '').toLowerCase()),
 			},
 			subscription: {
 				_id: subscription._id,
 				status: subscription.status,
 				planCode: subscription.planCode,
+				trialPlanCode: subscription.trialPlanCode || null,
+				effectivePlanCode,
 				trialEndsAt: subscription.trialEndsAt,
 				graceEndsAt: subscription.graceEndsAt,
 				currentPeriodStartAt: subscription.currentPeriodStartAt,
@@ -383,17 +509,30 @@ exports.getSummary = async (req, res) => {
 				nextBillingAt: subscription.nextBillingAt,
 				paymentInstrument: buildPaymentInstrumentPayload(subscription),
 			},
-			plan,
+			plans: {
+				base: basePlan ? serializeCatalogPlan(basePlan) : null,
+				effective: effectivePlan ? serializeCatalogPlan(effectivePlan) : null,
+			},
+			addons: {
+				active: activeAddons,
+				available: availableAddons,
+			},
 			usage: {
-				periodKey: usage.periodKey || getPeriodKeyUtc(new Date()),
+				periodKey: usage.periodKey || null,
+				periodType: usage.periodType || null,
+				periodStartAt: usage.periodStartAt || null,
+				periodEndAt: usage.periodEndAt || null,
 				counts: usage.counts || { votes: 0, surveys: 0, exports: 0 },
 				chatPeakMax: Number(usage.chatPeakMax || 0),
 				adminsPeak: Number(usage.adminsPeak || adminsCount || 1),
 				adminsCurrent: adminsCount,
 				metrics,
 			},
-			overageEstimate,
 			billingQuotePreview,
+			nextBestAction: buildNextBestAction({
+				subscription,
+				metrics,
+			}),
 		});
 	} catch (error) {
 		console.error('billing.getSummary:', error);
@@ -434,16 +573,28 @@ exports.createCheckout = async (req, res) => {
 
 		const requestedMode = parsed.data.mode || 'renewal';
 		const subscription = await getOrganizationSubscription(req.activeOrganizationId);
-		if (
-			String(subscription?.status || '').trim().toLowerCase() ===
-			SUBSCRIPTION_STATUSES.TRIALING
-		) {
-			const trialingError = buildTrialingCheckoutError(subscription);
-			return res.status(trialingError.status).json(trialingError.body);
-		}
+		const defaultPlanCode =
+			subscription.trialPlanCode || subscription.planCode || PLAN_CODES.FREE;
 		const targetPlanCode = parsed.data.planCode
 			? String(parsed.data.planCode).trim().toUpperCase()
-			: subscription.planCode;
+			: String(defaultPlanCode).trim().toUpperCase();
+		const basePlan = await getPlanByCode(subscription.planCode);
+		const targetPlan = await getPlanByCode(targetPlanCode);
+		if (!targetPlan) {
+			return res.status(400).json({ message: 'Plan de facturation introuvable.' });
+		}
+		if (!targetPlan?.isPublic || targetPlan?.isSelectable === false) {
+			return res.status(400).json({
+				message:
+					'Ce plan ne peut pas etre active en libre-service. Contactez le support commercial.',
+			});
+		}
+		if (!Number.isFinite(Number(targetPlan?.priceMonthlyUsd))) {
+			return res.status(400).json({
+				message: 'Ce plan requiert un parcours commercial, pas un checkout direct.',
+			});
+		}
+
 		let mode = requestedMode;
 		if (requestedMode !== 'retry' && targetPlanCode !== String(subscription.planCode || '')) {
 			mode = 'upgrade';
@@ -453,23 +604,14 @@ exports.createCheckout = async (req, res) => {
 		) {
 			mode = 'renewal';
 		}
-		const billingPlan = await getPlanByCode(subscription.planCode);
-		const targetPlan = await getPlanByCode(targetPlanCode);
-		if (!billingPlan || !targetPlan) {
-			return res.status(400).json({ message: 'Plan de facturation introuvable.' });
-		}
-		if (
-			mode === 'upgrade' &&
-			(!targetPlan?.isPublic || !Number.isFinite(Number(targetPlan?.priceMonthlyUsd)))
-		) {
-			return res.status(400).json({
-				message:
-					'Ce plan ne peut pas etre active en libre-service. Contactez le support commercial.',
+
+		if (mode === 'renewal' && Number(basePlan?.priceMonthlyUsd || 0) <= 0) {
+			return res.status(409).json({
+				message: 'Le plan gratuit ne se renouvelle pas par paiement. Choisissez un plan payant.',
 			});
 		}
 
-		const invoicePlan = mode === 'upgrade' ? targetPlan : billingPlan;
-
+		const invoicePlan = mode === 'upgrade' ? targetPlan : basePlan || targetPlan;
 		const usage = await getMonthlyUsage(req.activeOrganizationId);
 		const invoice = await findOrCreateInvoiceForOperation({
 			organizationId: req.activeOrganizationId,
@@ -477,7 +619,8 @@ exports.createCheckout = async (req, res) => {
 			plan: invoicePlan,
 			usage,
 			mode,
-			targetPlanCode: targetPlanCode && targetPlanCode !== subscription.planCode ? targetPlanCode : null,
+			targetPlanCode:
+				targetPlanCode && targetPlanCode !== subscription.planCode ? targetPlanCode : null,
 		});
 
 		const contact = await resolveBillingContact({
@@ -511,6 +654,98 @@ exports.createCheckout = async (req, res) => {
 	}
 };
 
+exports.createAddonCheckout = async (req, res) => {
+	try {
+		if (!isFedaPayConfigured()) {
+			return res.status(BILLING_ERROR_STATUS_BY_CODE[BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE]).json({
+				message: BILLING_ERROR_MESSAGES[BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE],
+				code: BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE,
+				details: { reason: 'FEDAPAY_NOT_CONFIGURED' },
+			});
+		}
+
+		if (!['owner', 'admin'].includes(String(req.activeOrganizationRole || '').toLowerCase())) {
+			return res.status(403).json({ message: 'Acces reserve aux admins de cette organisation.' });
+		}
+
+		const parsed = addonCheckoutSchema.safeParse(req.body || {});
+		if (!parsed.success) {
+			return res.status(400).json({
+				message: 'Payload addon invalide.',
+				errors: parsed.error.flatten(),
+			});
+		}
+
+		const subscription = await getOrganizationSubscription(req.activeOrganizationId);
+		if (String(subscription.status || '') === SUBSCRIPTION_STATUSES.TRIALING) {
+			return res.status(409).json({
+				message:
+					"Choisissez d'abord un plan payant pour convertir votre essai avant d'acheter un add-on.",
+			});
+		}
+
+		const effectivePlanCode = getEffectivePlanCode(subscription);
+		const eligibility = canPurchaseAddon({
+			addonCode: parsed.data.addonCode,
+			effectivePlanCode,
+		});
+		if (!eligibility.ok) {
+			return res.status(BILLING_ERROR_STATUS_BY_CODE[BILLING_ERROR_CODES.ADDON_NOT_ALLOWED]).json({
+				message: BILLING_ERROR_MESSAGES[BILLING_ERROR_CODES.ADDON_NOT_ALLOWED],
+				code: BILLING_ERROR_CODES.ADDON_NOT_ALLOWED,
+				details: {
+					reason: eligibility.reason,
+					effectivePlanCode,
+				},
+			});
+		}
+
+		const quantity = normalizeAddonQuantity(parsed.data.addonCode, parsed.data.quantity || 1);
+		if (!quantity) {
+			return res.status(BILLING_ERROR_STATUS_BY_CODE[BILLING_ERROR_CODES.ADDON_INVALID_QUANTITY]).json({
+				message: BILLING_ERROR_MESSAGES[BILLING_ERROR_CODES.ADDON_INVALID_QUANTITY],
+				code: BILLING_ERROR_CODES.ADDON_INVALID_QUANTITY,
+			});
+		}
+
+		const invoice = await createAddonInvoiceForCheckout({
+			organizationId: req.activeOrganizationId,
+			subscription,
+			addonCode: parsed.data.addonCode,
+			quantity,
+		});
+
+		const contact = await resolveBillingContact({
+			organizationId: req.activeOrganizationId,
+			fallbackEmail: req.userEmail || req.user?.email,
+			fallbackName: req.userPseudo || req.user?.pseudo || req.activeOrganization?.name,
+		});
+
+		const paymentResult = await attemptAutoRenewalCharge({
+			subscription,
+			invoice,
+			customerEmail: contact.email,
+			customerName: contact.name,
+			organizationId: req.activeOrganizationId,
+			mode: 'addon',
+		});
+
+		const refreshedSubscription = await getOrganizationSubscription(req.activeOrganizationId);
+		return res.status(200).json(
+			buildCheckoutResponse(
+				paymentResult.invoice || invoice,
+				paymentResult.checkoutData || null,
+				'addon',
+				buildPaymentInstrumentPayload(refreshedSubscription),
+			),
+		);
+	} catch (error) {
+		console.error('billing.createAddonCheckout:', error);
+		const normalized = normalizeCheckoutError(error);
+		return res.status(normalized.status).json(normalized.body);
+	}
+};
+
 exports.retryPayment = async (req, res) => {
 	try {
 		if (!isFedaPayConfigured()) {
@@ -528,15 +763,6 @@ exports.retryPayment = async (req, res) => {
 			});
 		}
 
-		const subscription = await getOrganizationSubscription(req.activeOrganizationId);
-		if (
-			String(subscription?.status || '').trim().toLowerCase() ===
-			SUBSCRIPTION_STATUSES.TRIALING
-		) {
-			const trialingError = buildTrialingCheckoutError(subscription);
-			return res.status(trialingError.status).json(trialingError.body);
-		}
-
 		const invoice = parsed.data.invoiceId
 			? await Invoice.findOne({
 					_id: parsed.data.invoiceId,
@@ -551,6 +777,7 @@ exports.retryPayment = async (req, res) => {
 			return res.status(404).json({ message: 'Aucune facture a relancer.' });
 		}
 
+		const subscription = await getOrganizationSubscription(req.activeOrganizationId);
 		const contact = await resolveBillingContact({
 			organizationId: req.activeOrganizationId,
 			fallbackEmail: req.userEmail || req.user?.email,

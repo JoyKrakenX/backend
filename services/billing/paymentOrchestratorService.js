@@ -6,18 +6,34 @@ const Invoice = require('../../models/Invoice');
 const Subscription = require('../../models/Subscription');
 const Organization = require('../../models/Organization');
 const User = require('../../models/User');
-const { TRIAL_SETTINGS, SUBSCRIPTION_STATUSES } = require('./constants');
+const { PLAN_CODES, TRIAL_SETTINGS, SUBSCRIPTION_STATUSES } = require('./constants');
 const { addDaysUtc, addMonthsUtc, getPeriodKeyUtc } = require('./periodService');
-const { buildInvoiceDraft, buildInvoiceKey } = require('./invoiceService');
-const { createTransaction, generateCheckoutToken } = require('./fedapayService');
-const { buildFxLock, isFxLockExpired, normalizeQuoteCurrency } = require('./fxService');
+const {
+	buildInvoiceDraft,
+	buildAddonInvoiceDraft,
+	buildInvoiceKey,
+} = require('./invoiceService');
+const {
+	createTransaction,
+	generateCheckoutToken,
+} = require('./fedapayService');
+const {
+	buildFxLock,
+	isFxLockExpired,
+	normalizeQuoteCurrency,
+} = require('./fxService');
 const { logSecurityEvent } = require('../securityAuditService');
+const { getPlanByCode } = require('./planService');
+const {
+	getAddonByCode,
+	activateAddonPurchase,
+	getActiveAddonsForSubscription,
+} = require('./addonService');
 
 const toMoney = (value) =>
 	Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 
 const BILLING_ERROR_CODES = Object.freeze({
-	TRIALING_LOCKED: 'BILLING_TRIALING_LOCKED',
 	PROVIDER_AMOUNT_CAP: 'BILLING_PROVIDER_AMOUNT_CAP',
 });
 
@@ -62,7 +78,7 @@ const assertProviderAmountCap = ({ chargeAmount, chargeCurrency }) => {
 
 const normalizeMode = (mode) => {
 	const value = String(mode || 'renewal').trim().toLowerCase();
-	if (['upgrade', 'retry', 'renewal'].includes(value)) return value;
+	if (['upgrade', 'retry', 'renewal', 'addon'].includes(value)) return value;
 	return 'renewal';
 };
 
@@ -351,10 +367,29 @@ const markInvoicePaidAndActivateSubscription = async ({
 	const subscription = await Subscription.findById(invoice.subscriptionId);
 	if (!subscription) return { invoice, subscription: null };
 
-	if (targetPlanCode) {
-		subscription.planCode = String(targetPlanCode).trim().toUpperCase();
+	const invoiceType = String(invoice?.metadata?.invoiceType || 'plan').trim().toLowerCase();
+	if (invoiceType === 'addon') {
+		await activateAddonPurchase({
+			organizationId: invoice.organizationId,
+			subscription,
+			invoice,
+			addonCode: invoice?.metadata?.addonCode,
+			quantity: Number(invoice?.metadata?.quantity || 1),
+			now: paidAt,
+		});
+		return { invoice, subscription };
 	}
 
+	const nextPlanCode = String(
+		targetPlanCode || invoice?.metadata?.targetPlanCode || subscription.planCode,
+	)
+		.trim()
+		.toUpperCase();
+
+	subscription.planCode = nextPlanCode;
+	subscription.trialPlanCode = null;
+	subscription.trialStartedAt = null;
+	subscription.trialEndsAt = null;
 	subscription.provider = {
 		...(subscription.provider || {}),
 		name: 'fedapay',
@@ -392,9 +427,13 @@ const markInvoiceFailedAndPastDue = async ({
 	await invoice.save();
 
 	const subscription = await Subscription.findById(invoice.subscriptionId);
-	if (subscription) {
+	if (
+		subscription &&
+		String(invoice?.kind || '').toLowerCase() !== 'addon' &&
+		String(subscription?.planCode || '').toUpperCase() !== PLAN_CODES.FREE
+	) {
 		subscription.status = SUBSCRIPTION_STATUSES.PAST_DUE;
-		subscription.graceEndsAt = addDaysUtc(new Date(), TRIAL_SETTINGS.graceDays);
+		subscription.graceEndsAt = addDaysUtc(new Date(), TRIAL_SETTINGS.paymentGraceDays);
 		await subscription.save();
 	}
 
@@ -559,26 +598,12 @@ const findOrCreateInvoiceForOperation = async ({
 	targetPlanCode = null,
 }) => {
 	const normalizedMode = normalizeMode(mode);
-	const subscriptionStatus = String(subscription?.status || '').trim().toLowerCase();
-	if (
-		subscriptionStatus === SUBSCRIPTION_STATUSES.TRIALING &&
-		['renewal', 'upgrade', 'retry'].includes(normalizedMode)
-	) {
-		throw createBillingError({
-			code: BILLING_ERROR_CODES.TRIALING_LOCKED,
-			status: 409,
-			message: "Essai gratuit en cours: la facturation est verrouillee jusqu'a la fin de l'essai.",
-			details: {
-				subscriptionStatus,
-				trialEndsAt: subscription?.trialEndsAt || null,
-			},
-		});
-	}
 
 	if (normalizedMode === 'retry') {
 		const existing = await Invoice.findOne({
 			organizationId,
 			status: { $in: ['failed', 'pending'] },
+			kind: { $ne: 'addon' },
 		}).sort({ createdAt: -1 });
 		if (existing) return existing;
 	}
@@ -599,6 +624,10 @@ const findOrCreateInvoiceForOperation = async ({
 		if (existingByKey) return existingByKey;
 	}
 
+	const activeAddons = await getActiveAddonsForSubscription({
+		organizationId,
+		subscriptionId: subscription?._id,
+	});
 	const draft = await buildInvoiceDraft({
 		organizationId,
 		subscription,
@@ -607,14 +636,42 @@ const findOrCreateInvoiceForOperation = async ({
 		kind,
 		periodKey,
 		targetPlanCode,
+		addons: activeAddons,
 	});
 	return Invoice.create({
 		...draft,
-		metadata: targetPlanCode ? { targetPlanCode } : null,
+		metadata: {
+			invoiceType: 'plan',
+			targetPlanCode: targetPlanCode || null,
+		},
 	});
 };
 
-// Kept for backward compatibility with the existing controller/lifecycle call sites.
+const createAddonInvoiceForCheckout = async ({
+	organizationId,
+	subscription,
+	addonCode,
+	quantity = 1,
+}) => {
+	const addon = getAddonByCode(addonCode);
+	if (!addon) {
+		throw createBillingError({
+			code: 'BILLING_ADDON_NOT_FOUND',
+			status: 404,
+			message: 'Addon introuvable.',
+		});
+	}
+
+	const draft = buildAddonInvoiceDraft({
+		organizationId,
+		subscription,
+		addon,
+		quantity,
+		periodKey: getPeriodKeyUtc(new Date()),
+	});
+	return Invoice.create(draft);
+};
+
 const attemptAutoRenewalCharge = async ({
 	subscription,
 	invoice,
@@ -654,6 +711,7 @@ const attemptAutoRenewalCharge = async ({
 module.exports = {
 	resolveBillingContact,
 	findOrCreateInvoiceForOperation,
+	createAddonInvoiceForCheckout,
 	createCheckoutForInvoice,
 	attemptAutoRenewalCharge,
 	validateVerifiedTransactionAgainstInvoice,

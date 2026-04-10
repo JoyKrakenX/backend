@@ -6,28 +6,12 @@ const path = require('path');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { EJSON } = require('bson');
+const { RESTORE_ORDER } = require('./environment-data-collections');
 
 require('dotenv').config({
 	path: path.join(__dirname, '..', '.env'),
 	quiet: true,
 });
-
-const RESTORE_ORDER = [
-	'users',
-	'surveys',
-	'survey_2',
-	'opinions',
-	'opinion_2',
-	'opinion_flashes',
-	'opinion_2_flashes',
-	'chatmessages',
-	'supporttickets',
-	'supportconversations',
-	'supportmessages',
-	'supportpushsubscriptions',
-	'newslettersubscribers',
-	'userprivacysettings',
-];
 
 const RESTORE_CONFIRMATION_TOKEN = 'RESTORE_DATA';
 
@@ -110,6 +94,9 @@ function readManifest(absoluteManifestPath) {
 	}
 	if (!manifest.dbName) {
 		throw new Error('Manifest is missing dbName.');
+	}
+	if (manifest.dbName !== 'test') {
+		throw new Error('Restore is only allowed for backups targeting the "test" database.');
 	}
 	if (!manifest.collections || typeof manifest.collections !== 'object') {
 		throw new Error('Manifest is missing collections metadata.');

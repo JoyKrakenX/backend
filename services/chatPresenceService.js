@@ -12,6 +12,46 @@ const buildPresenceSocketIndexKey = (organizationId, surveyId) =>
 const buildPresenceSocketKey = (socketId) =>
 	`presence:chat_socket:${String(socketId)}`;
 
+const buildPresencePayloadFromSockets = (sockets, roomName) => {
+	const roomId = String(roomName || '');
+	const usersMap = new Map();
+	const activeSocketIds = [];
+
+	(Array.isArray(sockets) ? sockets : []).forEach((socketLike) => {
+		const socketId = String(socketLike?.id || socketLike?.socketId || '').trim();
+		if (socketId) {
+			activeSocketIds.push(socketId);
+		}
+
+		const userId = String(
+			socketLike?.data?.userId || socketLike?.data?.authUser?.id || '',
+		).trim();
+		if (!userId) return;
+
+		if (!usersMap.has(userId)) {
+			usersMap.set(userId, {
+				userId,
+				pseudo: String(
+					socketLike?.data?.pseudo ||
+						socketLike?.data?.authUser?.pseudo ||
+						'Utilisateur',
+				),
+				picture:
+					socketLike?.data?.picture ||
+					socketLike?.data?.authUser?.picture ||
+					null,
+			});
+		}
+	});
+
+	return {
+		roomId,
+		onlineCount: usersMap.size,
+		users: Array.from(usersMap.values()),
+		activeSocketIds,
+	};
+};
+
 const serializePresenceEntry = ({
 	roomName,
 	organizationId,
@@ -74,6 +114,35 @@ const removeSocketPresence = async (
 		socketKey,
 		socketIndexKey,
 	};
+};
+
+const syncPresenceIndexWithActiveSocketIds = async (
+	redis,
+	{ organizationId, surveyId, activeSocketIds = [] },
+) => {
+	if (!redis || !organizationId || !surveyId) return [];
+
+	const socketIndexKey = buildPresenceSocketIndexKey(organizationId, surveyId);
+	const indexedSocketIds = await redis.smembers(socketIndexKey);
+	if (!indexedSocketIds.length) return [];
+
+	const activeSocketIdSet = new Set(
+		(activeSocketIds || []).map((socketId) => String(socketId)),
+	);
+	const staleSocketIds = indexedSocketIds.filter(
+		(socketId) => !activeSocketIdSet.has(String(socketId)),
+	);
+
+	if (!staleSocketIds.length) return [];
+
+	const pipeline = redis.multi();
+	pipeline.srem(socketIndexKey, ...staleSocketIds);
+	staleSocketIds.forEach((socketId) => {
+		pipeline.del(buildPresenceSocketKey(socketId));
+	});
+	await pipeline.exec();
+
+	return staleSocketIds;
 };
 
 const getRedisPresenceSnapshot = async (
@@ -159,9 +228,11 @@ const getRedisPresenceSnapshot = async (
 module.exports = {
 	SOCKET_HEARTBEAT_INTERVAL_MS,
 	SOCKET_TTL_SECONDS,
+	buildPresencePayloadFromSockets,
 	buildPresenceSocketIndexKey,
 	buildPresenceSocketKey,
 	getRedisPresenceSnapshot,
 	removeSocketPresence,
+	syncPresenceIndexWithActiveSocketIds,
 	touchSocketPresence,
 };

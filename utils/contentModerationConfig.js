@@ -14,6 +14,7 @@ const CONTENT_MODERATION_VERDICTS = Object.freeze({
 const CONTENT_MODERATION_SOURCES = Object.freeze([
 	'openai',
 	'ldnoobw',
+	'profanity_csv',
 	'hybrid',
 	'fallback',
 ]);
@@ -54,7 +55,11 @@ const CONTENT_MODERATION_CONFIG = Object.freeze({
 	).trim(),
 	openAiTimeoutMs: Math.max(
 		500,
-		parseNumber(process.env.CONTENT_MODERATION_OPENAI_TIMEOUT_MS, 1800),
+		parseNumber(process.env.CONTENT_MODERATION_OPENAI_TIMEOUT_MS, 1200),
+	),
+	openAiCooldownMs: Math.max(
+		1000,
+		parseNumber(process.env.CONTENT_MODERATION_OPENAI_COOLDOWN_MS, 60 * 1000),
 	),
 	logRetentionDays: Math.max(
 		7,
@@ -67,6 +72,10 @@ const CONTENT_MODERATION_CONFIG = Object.freeze({
 	maxPreviewLength: Math.max(
 		80,
 		parseNumber(process.env.CONTENT_MODERATION_PREVIEW_LIMIT, 280),
+	),
+	logAllowDecisions: parseBoolean(
+		process.env.CONTENT_MODERATION_LOG_ALLOW_DECISIONS,
+		false,
 	),
 });
 

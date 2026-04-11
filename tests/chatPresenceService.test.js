@@ -4,9 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+	buildPresencePayloadFromSockets,
 	buildPresenceSocketIndexKey,
 	getRedisPresenceSnapshot,
 	removeSocketPresence,
+	syncPresenceIndexWithActiveSocketIds,
 	touchSocketPresence,
 } = require('../services/chatPresenceService');
 
@@ -179,6 +181,77 @@ test('removeSocketPresence removes the socket and preserves other users', async 
 		roomName: 'survey-survey-1',
 	});
 
+	assert.equal(snapshot.onlineCount, 1);
+	assert.deepEqual(snapshot.users, [
+		{ userId: 'user-2', pseudo: 'Bob', picture: null },
+	]);
+});
+
+test('buildPresencePayloadFromSockets deduplicates users across active sockets', () => {
+	const payload = buildPresencePayloadFromSockets(
+		[
+			{
+				id: 'socket-a',
+				data: { userId: 'user-1', pseudo: 'Alice', picture: 'alice.png' },
+			},
+			{
+				id: 'socket-b',
+				data: { userId: 'user-1', pseudo: 'Alice', picture: 'alice.png' },
+			},
+			{
+				id: 'socket-c',
+				data: { userId: 'user-2', pseudo: 'Bob', picture: null },
+			},
+		],
+		'survey-survey-1',
+	);
+
+	assert.equal(payload.roomId, 'survey-survey-1');
+	assert.equal(payload.onlineCount, 2);
+	assert.deepEqual(payload.users, [
+		{ userId: 'user-1', pseudo: 'Alice', picture: 'alice.png' },
+		{ userId: 'user-2', pseudo: 'Bob', picture: null },
+	]);
+	assert.deepEqual(payload.activeSocketIds, ['socket-a', 'socket-b', 'socket-c']);
+});
+
+test('syncPresenceIndexWithActiveSocketIds removes stale redis socket presence', async () => {
+	const redis = new FakeRedis();
+	await touchSocketPresence(redis, {
+		organizationId: 'org-1',
+		surveyId: 'survey-1',
+		roomName: 'survey-survey-1',
+		socketId: 'socket-a',
+		userId: 'user-1',
+		pseudo: 'Alice',
+		picture: null,
+	});
+	await touchSocketPresence(redis, {
+		organizationId: 'org-1',
+		surveyId: 'survey-1',
+		roomName: 'survey-survey-1',
+		socketId: 'socket-b',
+		userId: 'user-2',
+		pseudo: 'Bob',
+		picture: null,
+	});
+
+	const staleSocketIds = await syncPresenceIndexWithActiveSocketIds(redis, {
+		organizationId: 'org-1',
+		surveyId: 'survey-1',
+		activeSocketIds: ['socket-b'],
+	});
+
+	assert.deepEqual(staleSocketIds, ['socket-a']);
+	assert.deepEqual(await redis.smembers(buildPresenceSocketIndexKey('org-1', 'survey-1')), [
+		'socket-b',
+	]);
+
+	const snapshot = await getRedisPresenceSnapshot(redis, {
+		organizationId: 'org-1',
+		surveyId: 'survey-1',
+		roomName: 'survey-survey-1',
+	});
 	assert.equal(snapshot.onlineCount, 1);
 	assert.deepEqual(snapshot.users, [
 		{ userId: 'user-2', pseudo: 'Bob', picture: null },

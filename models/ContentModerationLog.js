@@ -103,6 +103,8 @@ const contentModerationLogSchema = new mongoose.Schema(
 				{
 					locale: { type: String, required: true },
 					term: { type: String, required: true },
+					source: { type: String, default: 'ldnoobw' },
+					severity: { type: String, default: 'medium' },
 				},
 			],
 			default: [],

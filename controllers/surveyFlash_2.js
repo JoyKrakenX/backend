@@ -223,9 +223,9 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
-		const commentModerationResult =
+		const commentModerationPromise =
 			reason ?
-				await moderateSurveyComment({
+				moderateSurveyComment({
 					text: reason,
 					locale: req.body.locale,
 					surveyId: survey._id,
@@ -234,7 +234,9 @@ exports.submitOpinion = async (req, res) => {
 					userId: req.userId,
 					userPseudoSnapshot: req.userPseudo,
 				})
-			:	null;
+			:	Promise.resolve(null);
+
+		const commentModerationResult = await commentModerationPromise;
 
 		const opinion = new Opinion2Flash({
 			answer: String(req.body.choice).trim(),
@@ -255,70 +257,7 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
-		await trackVote({
-			organizationId,
-			idempotencyKey: `vote:${String(opinion._id)}`,
-			meta: {
-				surveyId: String(survey._id),
-				type: 'multiple',
-				flash: true,
-				userId: String(req.userId),
-			},
-		});
-
-		const io = req.app.get('io');
-		const room = `flash-multiple-${survey._id}`;
-		const normalizedSurvey = normalizeSurveyForPayload(survey);
-		const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
-			Opinion2Flash,
-			survey._id,
-			normalizedSurvey.optionKeys,
-			buildStatusFilter('clean'),
-		);
-
-		const visibleReason = String(getOpinionVisibleReason(opinion) || '').trim();
-		if (visibleReason) {
-			io.to(room).emit('flash:new-opinion', {
-				_id: opinion._id,
-				answer: opinion.answer,
-				reason: visibleReason,
-				surveyId: String(opinion.surveyId),
-				userPseudo: getOpinionDisplayPseudo(opinion, survey._id),
-				createdAt: opinion.createdAt,
-				likeCount: 0,
-				dislikeCount: 0,
-				userLiked: false,
-				userDisliked: false,
-			});
-		}
-
-		io.to(room).emit('flash:counts', {
-			surveyId: String(survey._id),
-			type: 'multiple',
-			options: normalizedSurvey.options,
-			optionKeys: normalizedSurvey.optionKeys,
-			labels: normalizedSurvey.labels,
-			counts,
-			totalOpinions,
-			isClosed: Boolean(survey.isClosed),
-		});
-
-		emitSurveyFeedUpdate(req.app.get('io'), {
-			action: 'vote',
-			surveyId: survey._id,
-			type: 'multiple',
-			explain: survey.explain,
-			status: normalizeSurveyStatus(survey.status),
-			isClosed: Boolean(survey.isClosed),
-			ownerUserId: survey.userId,
-			organizationId: organizationId || survey.organizationId || null,
-			createdAt: survey.createdAt,
-			endedAt: survey.endedAt,
-			totalOpinions,
-			occurredAt: new Date(),
-		});
-
-		return res.status(201).json({
+		res.status(201).json({
 			message: 'Opinion enregistree !',
 			hasParticipated: true,
 			canVote: false,
@@ -327,6 +266,76 @@ exports.submitOpinion = async (req, res) => {
 			fraudReview: opinion.fraudStatus === 'quarantined',
 			commentModeration: buildCommentSubmissionModerationPayload(opinion),
 		});
+
+		const io = req.app.get('io');
+		const normalizedSurvey = normalizeSurveyForPayload(survey);
+		void (async () => {
+			try {
+				await trackVote({
+					organizationId,
+					idempotencyKey: `vote:${String(opinion._id)}`,
+					meta: {
+						surveyId: String(survey._id),
+						type: 'multiple',
+						flash: true,
+						userId: String(req.userId),
+					},
+				});
+
+				const room = `flash-multiple-${survey._id}`;
+				const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+					Opinion2Flash,
+					survey._id,
+					normalizedSurvey.optionKeys,
+					buildStatusFilter('clean'),
+				);
+
+				const visibleReason = String(getOpinionVisibleReason(opinion) || '').trim();
+				if (visibleReason) {
+					io.to(room).emit('flash:new-opinion', {
+						_id: opinion._id,
+						answer: opinion.answer,
+						reason: visibleReason,
+						surveyId: String(opinion.surveyId),
+						userPseudo: getOpinionDisplayPseudo(opinion, survey._id),
+						createdAt: opinion.createdAt,
+						likeCount: 0,
+						dislikeCount: 0,
+						userLiked: false,
+						userDisliked: false,
+					});
+				}
+
+				io.to(room).emit('flash:counts', {
+					surveyId: String(survey._id),
+					type: 'multiple',
+					options: normalizedSurvey.options,
+					optionKeys: normalizedSurvey.optionKeys,
+					labels: normalizedSurvey.labels,
+					counts,
+					totalOpinions,
+					isClosed: Boolean(survey.isClosed),
+				});
+
+				emitSurveyFeedUpdate(req.app.get('io'), {
+					action: 'vote',
+					surveyId: survey._id,
+					type: 'multiple',
+					explain: survey.explain,
+					status: normalizeSurveyStatus(survey.status),
+					isClosed: Boolean(survey.isClosed),
+					ownerUserId: survey.userId,
+					organizationId: organizationId || survey.organizationId || null,
+					createdAt: survey.createdAt,
+					endedAt: survey.endedAt,
+					totalOpinions,
+					occurredAt: new Date(),
+				});
+			} catch (postCommitError) {
+				console.error('surveyFlash_2.submitOpinion.postCommit error:', postCommitError);
+			}
+		})();
+		return;
 	} catch (error) {
 		if (error && error.code === 11000) {
 			return res.status(403).json({

@@ -11,7 +11,11 @@ const {
 	canManageSurveyByOrganization,
 } = require('../services/surveyAuthorizationService');
 const { getRedisClient } = require('../services/redisService');
-const { getRedisPresenceSnapshot } = require('../services/chatPresenceService');
+const {
+	buildPresencePayloadFromSockets,
+	getRedisPresenceSnapshot,
+	syncPresenceIndexWithActiveSocketIds,
+} = require('../services/chatPresenceService');
 const {
 	CHAT_ERROR_CODES,
 	CHAT_RESTRICTION_STATES,
@@ -27,6 +31,11 @@ const {
 	createChatModerationError,
 } = require('../services/chatModerationService');
 const { moderateChatMessage } = require('../services/contentModerationService');
+const {
+	buildFreshChatMessagePayload,
+	formatChatMessagePayload,
+	normalizeObjectId,
+} = require('../services/chatMessagePayloadService');
 
 const getSurveyModelName = (type) =>
 	type === 'multiple' ? 'Survey_2' : 'Survey';
@@ -53,6 +62,23 @@ const getOnlineUsersCount = async ({ io, survey, surveyId }) => {
 	const roomName = `survey-${String(surveyId)}`;
 	const organizationId = await resolveSurveyOrganizationId(survey);
 	const redis = await getRedisClient();
+
+	if (typeof io.in(roomName).fetchSockets === 'function') {
+		try {
+			const sockets = await io.in(roomName).fetchSockets();
+			const payload = buildPresencePayloadFromSockets(sockets, roomName);
+			if (redis && organizationId) {
+				await syncPresenceIndexWithActiveSocketIds(redis, {
+					organizationId,
+					surveyId,
+					activeSocketIds: payload.activeSocketIds,
+				});
+			}
+			return Number(payload.onlineCount || 0);
+		} catch (error) {
+			console.error('getOnlineUsersCount.fetchSockets error:', error?.message || error);
+		}
+	}
 
 	if (redis && organizationId) {
 		const snapshot = await getRedisPresenceSnapshot(redis, {
@@ -121,43 +147,9 @@ exports.getChatMessages = async (req, res, next) => {
 		const reversedMessages = messages.reverse();
 
 		// Enrichir avec les informations utilisateur
-		const enrichedMessages = reversedMessages.map((msg) => {
-			const likeCount = (msg.likes && msg.likes.length) || 0;
-			const dislikeCount = (msg.dislikes && msg.dislikes.length) || 0;
-
-			const userLiked = req.userId
-				? (msg.likes || []).some(
-						(id) => id.toString() === req.userId.toString()
-				  )
-				: false;
-
-			const userDisliked = req.userId
-				? (msg.dislikes || []).some(
-						(id) => id.toString() === req.userId.toString()
-				  )
-				: false;
-
-			return {
-				...msg,
-				id: msg._id, // Ajout de l'ID
-				likeCount,
-				dislikeCount,
-				userLiked,
-				userDisliked,
-				replyTo: msg.replyTo, // Assurez-vous d'inclure
-				replyToInfo: msg.replyToInfo, // Assurez-vous d'inclure
-				user: {
-					id: msg.userId ? msg.userId._id : null,
-					pseudo: msg.userPseudo || 'Utilisateur',
-					picture:
-						msg.userId && msg.userId.picture
-							? msg.userId.picture
-							: 'https://ui-avatars.com/api/?name=' +
-							  encodeURIComponent(msg.userPseudo || 'Utilisateur') +
-							  '&background=6366f1&color=fff',
-				},
-			};
-		});
+		const enrichedMessages = reversedMessages.map((msg) =>
+			formatChatMessagePayload(msg, { actorUserId: req.userId }),
+		);
 
 		// Compter le total des messages
 		const totalMessages = await ChatMessage.countDocuments(messageFilter);
@@ -254,7 +246,7 @@ exports.getChatMessages = async (req, res, next) => {
 exports.sendMessage = async (req, res, next) => {
 	try {
 		const { surveyId } = req.params;
-		const { message, type, replyTo, locale } = req.body;
+		const { message, type, replyTo, locale, clientMessageId } = req.body;
 
 		if (!surveyId || !mongoose.Types.ObjectId.isValid(surveyId)) {
 			return res.status(400).json({ message: 'surveyId manquant ou invalide' });
@@ -369,35 +361,32 @@ exports.sendMessage = async (req, res, next) => {
 		});
 
 		await chatMessage.save();
-		await chatMessage.populate('userId', 'pseudo picture');
-		const populatedMessage = chatMessage.toObject();
 
-		const formattedMessage = {
-			...populatedMessage,
-			id: populatedMessage._id,
-			likeCount: 0,
-			dislikeCount: 0,
-			userLiked: false,
-			userDisliked: false,
-			user: {
-				id: populatedMessage.userId ? populatedMessage.userId._id : null,
-				pseudo: populatedMessage.userPseudo || 'Utilisateur',
-				picture:
-					populatedMessage.userId && populatedMessage.userId.picture
-						? populatedMessage.userId.picture
-						: 'https://ui-avatars.com/api/?name=' +
-						  encodeURIComponent(populatedMessage.userPseudo || 'Utilisateur') +
-						  '&background=6366f1&color=fff',
-			},
-			replyTo: populatedMessage.replyTo,
-			replyToInfo: populatedMessage.replyToInfo,
-		};
-
-		delete formattedMessage._id;
-		delete formattedMessage.__v;
+		const formattedMessage = buildFreshChatMessagePayload(chatMessage, {
+			actorUserId: req.userId,
+			userId: req.userId,
+			pseudo: req.userPseudo,
+			picture: req.user?.picture || null,
+		});
+		if (clientMessageId) {
+			formattedMessage.clientMessageId = String(clientMessageId);
+		}
 
 		const io = req.app.get('io');
 		io.to(`survey-${surveyId}`).emit('newMessage', formattedMessage);
+		const replyTargetUserId = normalizeObjectId(replyToInfo?.userId);
+		if (replyTargetUserId && replyTargetUserId !== String(req.userId)) {
+			io.to(buildSurveyUserRoomName(surveyId, replyTargetUserId)).emit(
+				'replyNotification',
+				{
+					targetUserId: replyTargetUserId,
+					fromUser: req.userPseudo || 'Utilisateur',
+					message: message.trim(),
+					messageId: String(formattedMessage.id || chatMessage._id),
+					surveyId: String(surveyId),
+				},
+			);
+		}
 
 		res.status(201).json({
 			message: 'Message envoyé',

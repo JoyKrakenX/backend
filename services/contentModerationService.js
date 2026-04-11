@@ -23,8 +23,12 @@ try {
 }
 
 const WORDLIST_DIR = path.join(__dirname, '../data/moderation/ldnoobw');
+const PROFANITY_CSV_PATH = path.join(__dirname, '../data/moderation/profanity.csv');
 const OPENAI_UNAVAILABLE_REASON = 'OPENAI_PROVIDER_UNAVAILABLE';
+const OPENAI_RATE_LIMIT_REASON = 'OPENAI_RATE_LIMITED';
+const OPENAI_COOLDOWN_REASON = 'OPENAI_PROVIDER_COOLDOWN';
 const EXACT_LEXICAL_REASON = 'LDNOOBW_EXACT_MATCH';
+const PROFANITY_CSV_REASON = 'PROFANITY_CSV_MATCH';
 const OBFUSCATION_MAP = Object.freeze({
 	'@': 'a',
 	'0': 'o',
@@ -54,8 +58,12 @@ const OPENAI_CATEGORY_REASON_MAP = Object.freeze({
 });
 
 const wordlistCache = new Map();
+const profanityCsvCache = new Map();
 const moderationCache = new Map();
 let openAiClient = null;
+let openAiProviderCooldownUntil = 0;
+let openAiProviderLastFailure = null;
+let moderationWarmupPromise = null;
 
 const removeDiacritics = (value) =>
 	String(value || '')
@@ -128,6 +136,68 @@ const loadWordlistForLocale = (locale) => {
 	return wordlist;
 };
 
+const buildEmptyWordlist = (locale) => ({
+	locale,
+	terms: [],
+	termSet: new Set(),
+	termMeta: new Map(),
+});
+
+const loadProfanityCsvWordlists = () => {
+	if (profanityCsvCache.size > 0) {
+		return profanityCsvCache;
+	}
+
+	const index = new Map(
+		SUPPORTED_MODERATION_LOCALES.map((locale) => [locale, buildEmptyWordlist(locale)]),
+	);
+
+	let rawCsv = '';
+	try {
+		rawCsv = fs.readFileSync(PROFANITY_CSV_PATH, 'utf8');
+	} catch (_error) {
+		rawCsv = '';
+	}
+
+	rawCsv
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line && !line.startsWith('#'))
+		.slice(1)
+		.forEach((line) => {
+			const [rawLocale = '', rawTerm = '', rawSeverity = 'medium'] = line
+				.split(',')
+				.map((entry) => String(entry || '').trim());
+			const locale = normalizeModerationLocale(rawLocale);
+			const term = normalizeForLexicalMatch(rawTerm);
+			if (!term || term.length < 2) return;
+
+			const wordlist = index.get(locale) || buildEmptyWordlist(locale);
+			if (!wordlist.termSet.has(term)) {
+				wordlist.terms.push(term);
+				wordlist.termSet.add(term);
+			}
+			wordlist.termMeta.set(term, {
+				source: 'profanity_csv',
+				severity: rawSeverity || 'medium',
+			});
+			index.set(locale, wordlist);
+		});
+
+	for (const [locale, wordlist] of index.entries()) {
+		wordlist.terms.sort((left, right) => left.localeCompare(right));
+		profanityCsvCache.set(locale, wordlist);
+	}
+
+	return profanityCsvCache;
+};
+
+const loadProfanityCsvWordlistForLocale = (locale) => {
+	const normalizedLocale = normalizeModerationLocale(locale);
+	const index = loadProfanityCsvWordlists();
+	return index.get(normalizedLocale) || buildEmptyWordlist(normalizedLocale);
+};
+
 const getCandidateLocales = (locale) => {
 	const normalizedLocale = normalizeModerationLocale(locale);
 	return Array.from(new Set([normalizedLocale, ...SUPPORTED_MODERATION_LOCALES]));
@@ -146,21 +216,39 @@ const collectLexicalMatches = ({ text, locale }) => {
 	const matches = [];
 
 	getCandidateLocales(locale).forEach((candidateLocale) => {
-		const wordlist = loadWordlistForLocale(candidateLocale);
-		wordlist.terms.forEach((term) => {
-			const needle = ` ${term} `;
-			if (paddedText.includes(needle)) {
-				matches.push({
-					locale: candidateLocale,
-					term,
-				});
-			}
+		const wordlists = [
+			{
+				source: 'ldnoobw',
+				wordlist: loadWordlistForLocale(candidateLocale),
+			},
+			{
+				source: 'profanity_csv',
+				wordlist: loadProfanityCsvWordlistForLocale(candidateLocale),
+			},
+		];
+
+		wordlists.forEach(({ source, wordlist }) => {
+			wordlist.terms.forEach((term) => {
+				const needle = ` ${term} `;
+				if (paddedText.includes(needle)) {
+					const meta = wordlist.termMeta?.get(term) || {};
+					matches.push({
+						locale: candidateLocale,
+						term,
+						source,
+						severity: meta.severity || 'medium',
+					});
+				}
+			});
 		});
 	});
 
 	const deduped = Array.from(
 		new Map(
-			matches.map((match) => [`${match.locale}:${match.term}`, match]),
+			matches.map((match) => [
+				`${match.locale}:${match.source}:${match.term}`,
+				match,
+			]),
 		).values(),
 	).sort((left, right) => left.term.localeCompare(right.term));
 
@@ -174,24 +262,64 @@ const getOpenAiClient = () => {
 	if (openAiClient) return openAiClient;
 	const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
 	if (!apiKey || !OpenAIClientCtor) return null;
-	openAiClient = new OpenAIClientCtor({ apiKey });
+	openAiClient = new OpenAIClientCtor({
+		apiKey,
+		maxRetries: 0,
+		timeout: CONTENT_MODERATION_CONFIG.openAiTimeoutMs,
+	});
 	return openAiClient;
 };
 
-const withTimeout = async (promise, timeoutMs) => {
-	let timeoutId = null;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise((_, reject) => {
-				timeoutId = setTimeout(() => {
-					reject(new Error('OPENAI_MODERATION_TIMEOUT'));
-				}, timeoutMs);
-			}),
-		]);
-	} finally {
-		if (timeoutId) clearTimeout(timeoutId);
-	}
+const buildUnavailableOpenAiSummary = ({
+	locale,
+	error,
+	status = null,
+	reasonCodes = [OPENAI_UNAVAILABLE_REASON],
+	providerMeta = {},
+}) => ({
+	flagged: false,
+	providerStatus: 'unavailable',
+	reasonCodes,
+	categories: {},
+	categoryScores: {},
+	providerMeta: {
+		error: error || 'OPENAI_PROVIDER_FAILURE',
+		locale,
+		status,
+		...providerMeta,
+	},
+});
+
+const buildSkippedOpenAiSummary = (providerMeta = {}) => ({
+	flagged: false,
+	providerStatus: 'skipped',
+	reasonCodes: [],
+	categories: {},
+	categoryScores: {},
+	providerMeta: {
+		skipped: true,
+		...providerMeta,
+	},
+});
+
+const markOpenAiProviderUnavailable = ({
+	reason,
+	status = null,
+	error = null,
+}) => {
+	openAiProviderCooldownUntil =
+		Date.now() + CONTENT_MODERATION_CONFIG.openAiCooldownMs;
+	openAiProviderLastFailure = {
+		reason: reason || OPENAI_UNAVAILABLE_REASON,
+		status,
+		error: error || 'OPENAI_PROVIDER_FAILURE',
+		recordedAt: new Date().toISOString(),
+	};
+};
+
+const clearOpenAiProviderUnavailable = () => {
+	openAiProviderCooldownUntil = 0;
+	openAiProviderLastFailure = null;
 };
 
 const summarizeOpenAiModeration = (rawResult) => {
@@ -232,43 +360,68 @@ const summarizeOpenAiModeration = (rawResult) => {
 	};
 };
 
-const runOpenAiModeration = async ({ text, locale }) => {
-	const client = getOpenAiClient();
-	if (!client) {
-		return {
-			flagged: false,
-			providerStatus: 'unavailable',
-			reasonCodes: [OPENAI_UNAVAILABLE_REASON],
-			categories: {},
-			categoryScores: {},
-			providerMeta: {
-				error: 'OPENAI_API_KEY_MISSING',
-				locale,
-			},
-		};
+const runOpenAiModeration = async ({ text, locale, skipProvider = false }) => {
+	if (skipProvider) {
+		return buildSkippedOpenAiSummary({
+			locale,
+			skipReason: 'LEXICAL_FAST_BLOCK',
+		});
 	}
 
-	try {
-		const response = await withTimeout(
-			client.moderations.create({
-				model: CONTENT_MODERATION_CONFIG.openAiModel,
-				input: text,
-			}),
-			CONTENT_MODERATION_CONFIG.openAiTimeoutMs,
-		);
-		return summarizeOpenAiModeration(response);
-	} catch (error) {
-		return {
-			flagged: false,
-			providerStatus: 'unavailable',
-			reasonCodes: [OPENAI_UNAVAILABLE_REASON],
-			categories: {},
-			categoryScores: {},
+	const client = getOpenAiClient();
+	if (!client) {
+		return buildUnavailableOpenAiSummary({
+			locale,
+			error: 'OPENAI_API_KEY_MISSING',
+		});
+	}
+
+	if (openAiProviderCooldownUntil > Date.now()) {
+		return buildUnavailableOpenAiSummary({
+			locale,
+			error: openAiProviderLastFailure?.error || 'OPENAI_PROVIDER_COOLDOWN',
+			status: openAiProviderLastFailure?.status || null,
+			reasonCodes: [OPENAI_UNAVAILABLE_REASON, OPENAI_COOLDOWN_REASON],
 			providerMeta: {
-				error: error?.message || 'OPENAI_PROVIDER_FAILURE',
-				locale,
+				cooldownUntil: new Date(openAiProviderCooldownUntil).toISOString(),
+				lastFailure: openAiProviderLastFailure,
 			},
+		});
+	}
+
+	const startedAt = Date.now();
+	try {
+		const response = await client.moderations.create({
+			model: CONTENT_MODERATION_CONFIG.openAiModel,
+			input: text,
+		});
+		const summary = summarizeOpenAiModeration(response);
+		clearOpenAiProviderUnavailable();
+		summary.providerMeta = {
+			...(summary.providerMeta || {}),
+			responseTimeMs: Date.now() - startedAt,
 		};
+		return summary;
+	} catch (error) {
+		const status = Number(error?.status || 0) || null;
+		const reasonCodes =
+			status === 429 ?
+				[OPENAI_UNAVAILABLE_REASON, OPENAI_RATE_LIMIT_REASON]
+			:	[OPENAI_UNAVAILABLE_REASON];
+		markOpenAiProviderUnavailable({
+			reason: reasonCodes[reasonCodes.length - 1],
+			status,
+			error: error?.message || 'OPENAI_PROVIDER_FAILURE',
+		});
+		return buildUnavailableOpenAiSummary({
+			locale,
+			error: error?.message || 'OPENAI_PROVIDER_FAILURE',
+			status,
+			reasonCodes,
+			providerMeta: {
+				responseTimeMs: Date.now() - startedAt,
+			},
+		});
 	}
 };
 
@@ -280,9 +433,16 @@ const buildVerdictForSurface = (surface, shouldBlock) => {
 };
 
 const buildDecisionSource = ({ lexicalMatches, openAiSummary }) => {
-	if (lexicalMatches.length && openAiSummary.flagged) return 'hybrid';
-	if (lexicalMatches.length) {
-		return openAiSummary.providerStatus === 'unavailable' ? 'fallback' : 'ldnoobw';
+	const lexicalSources = new Set(
+		(lexicalMatches || []).map((match) => String(match?.source || 'ldnoobw')),
+	);
+	if ((lexicalMatches || []).length && openAiSummary.flagged) return 'hybrid';
+	if (lexicalSources.size > 1) return 'hybrid';
+	if (lexicalSources.has('profanity_csv')) {
+		return 'profanity_csv';
+	}
+	if (lexicalSources.has('ldnoobw')) {
+		return 'ldnoobw';
 	}
 	if (openAiSummary.flagged) return 'openai';
 	return openAiSummary.providerStatus === 'unavailable' ? 'fallback' : 'openai';
@@ -310,23 +470,39 @@ const evaluateContentModeration = async ({
 	surface,
 	locale,
 }) => {
+	const startedAt = process.hrtime.bigint();
 	const normalizedLocale = normalizeModerationLocale(locale);
 	const normalizedHashSource = normalizeForHash(text);
 	const textHash = buildTextHash(normalizedHashSource);
 	const cacheKey = `${surface}:${normalizedLocale}:${textHash}`;
 	const cached = getCacheEntry(cacheKey);
-	if (cached) return cached;
+	if (cached) {
+		return {
+			...cached,
+			timings: {
+				...(cached.timings || {}),
+				cacheHit: true,
+			},
+		};
+	}
 
+	const lexicalStartedAt = process.hrtime.bigint();
 	const lexical = collectLexicalMatches({
 		text,
 		locale: normalizedLocale,
 	});
+	const lexicalMs =
+		Number(process.hrtime.bigint() - lexicalStartedAt) / 1e6;
+	const lexicalFlagged = lexical.matches.length > 0;
+
+	const providerStartedAt = process.hrtime.bigint();
 	const openAiSummary = await runOpenAiModeration({
 		text,
 		locale: normalizedLocale,
+		skipProvider: lexicalFlagged,
 	});
-
-	const lexicalFlagged = lexical.matches.length > 0;
+	const providerMs =
+		Number(process.hrtime.bigint() - providerStartedAt) / 1e6;
 	const shouldBlock = lexicalFlagged || openAiSummary.flagged;
 	const recommendedVerdict = buildVerdictForSurface(surface, shouldBlock);
 	const enforced =
@@ -335,7 +511,12 @@ const evaluateContentModeration = async ({
 		enforced ? recommendedVerdict : CONTENT_MODERATION_VERDICTS.ALLOW;
 	const reasonCodes = Array.from(
 		new Set([
-			...(lexicalFlagged ? [EXACT_LEXICAL_REASON] : []),
+			...(lexical.matches.some((match) => match.source === 'ldnoobw') ?
+				[EXACT_LEXICAL_REASON]
+			:	[]),
+			...(lexical.matches.some((match) => match.source === 'profanity_csv') ?
+				[PROFANITY_CSV_REASON]
+			:	[]),
 			...openAiSummary.reasonCodes,
 		]),
 	);
@@ -362,6 +543,14 @@ const evaluateContentModeration = async ({
 			openAiSummary.providerStatus === 'skipped' ? 'skipped' : providerStatus,
 		providerMeta: openAiSummary.providerMeta,
 		openAi: openAiSummary,
+		timings: {
+			cacheHit: false,
+			lexicalMs: Number(lexicalMs.toFixed(2)),
+			providerMs: Number(providerMs.toFixed(2)),
+			totalMs: Number(
+				(Number(process.hrtime.bigint() - startedAt) / 1e6).toFixed(2),
+			),
+		},
 	};
 
 	setCacheEntry(cacheKey, decision);
@@ -400,6 +589,14 @@ const createContentModerationLog = async ({
 		providerMeta: decision.providerMeta,
 		lexicalMatches: decision.lexicalMatches,
 	});
+};
+
+const shouldPersistModerationLog = (decision) => {
+	if (!decision) return false;
+	if (decision.recommendedVerdict !== CONTENT_MODERATION_VERDICTS.ALLOW) {
+		return true;
+	}
+	return CONTENT_MODERATION_CONFIG.logAllowDecisions;
 };
 
 const moderateContent = async ({
@@ -441,15 +638,18 @@ const moderateContent = async ({
 		surface,
 		locale: normalizedLocale,
 	});
-	const logEntry = await createContentModerationLog({
-		surface,
-		surveyId,
-		surveyType,
-		surveyModel,
-		userId,
-		userPseudoSnapshot,
-		decision,
-	});
+	const logEntry =
+		shouldPersistModerationLog(decision) ?
+			await createContentModerationLog({
+				surface,
+				surveyId,
+				surveyType,
+				surveyModel,
+				userId,
+				userPseudoSnapshot,
+				decision,
+			})
+		:	null;
 	return {
 		ok: decision.appliedVerdict === CONTENT_MODERATION_VERDICTS.ALLOW,
 		decision,
@@ -469,10 +669,48 @@ const moderateSurveyComment = async (payload = {}) =>
 		surface: CONTENT_MODERATION_SURFACES.SURVEY_COMMENT,
 	});
 
+const primeContentModeration = async () => {
+	if (moderationWarmupPromise) {
+		return moderationWarmupPromise;
+	}
+
+	moderationWarmupPromise = (async () => {
+		const lexicalLocales = [];
+		for (const locale of SUPPORTED_MODERATION_LOCALES) {
+			loadWordlistForLocale(locale);
+			loadProfanityCsvWordlistForLocale(locale);
+			lexicalLocales.push(locale);
+		}
+
+		let provider = 'skipped';
+		let providerStatus = 'skipped';
+		if (getOpenAiClient()) {
+			const summary = await runOpenAiModeration({
+				text: 'Community moderation warmup',
+				locale: 'en',
+			});
+			provider = 'primed';
+			providerStatus = summary.providerStatus;
+		}
+
+		return {
+			lexicalLocales,
+			provider,
+			providerStatus,
+		};
+	})();
+
+	return moderationWarmupPromise;
+};
+
 const resetModerationTestState = () => {
 	wordlistCache.clear();
+	profanityCsvCache.clear();
 	moderationCache.clear();
 	openAiClient = null;
+	openAiProviderCooldownUntil = 0;
+	openAiProviderLastFailure = null;
+	moderationWarmupPromise = null;
 };
 
 const setOpenAiClientCtorForTests = (ctor) => {
@@ -483,10 +721,15 @@ const setOpenAiClientCtorForTests = (ctor) => {
 module.exports = {
 	OPENAI_UNAVAILABLE_REASON,
 	EXACT_LEXICAL_REASON,
+	PROFANITY_CSV_REASON,
+	OPENAI_COOLDOWN_REASON,
+	OPENAI_RATE_LIMIT_REASON,
 	moderateContent,
 	moderateChatMessage,
 	moderateSurveyComment,
+	primeContentModeration,
 	loadWordlistForLocale,
+	loadProfanityCsvWordlistForLocale,
 	createContentModerationLog,
 	__test__: {
 		removeDiacritics,
@@ -504,6 +747,9 @@ module.exports = {
 		getCacheEntry,
 		runOpenAiModeration,
 		getEnabledForSurface,
+		primeContentModeration,
+		loadProfanityCsvWordlistForLocale,
+		profanityCsvCache,
 		resetModerationTestState,
 		setOpenAiClientCtorForTests,
 	},

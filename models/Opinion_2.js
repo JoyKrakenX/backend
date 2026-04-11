@@ -72,7 +72,7 @@ const opinion_2_Schema = new mongoose.Schema({
 	commentModerationReasonCodes: { type: [String], default: [] },
 	commentModerationSource: {
 		type: String,
-		enum: ['openai', 'ldnoobw', 'hybrid', 'fallback'],
+		enum: ['openai', 'ldnoobw', 'profanity_csv', 'hybrid', 'fallback'],
 		default: null,
 	},
 	commentModerationLocale: {

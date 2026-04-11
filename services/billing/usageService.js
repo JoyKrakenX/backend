@@ -15,8 +15,13 @@ const toObjectId = (id) =>
 const buildDuplicateError = (error) =>
 	Boolean(error && (error.code === 11000 || error?.message?.includes('duplicate key')));
 
-const resolveUsageWindowDescriptor = async (organizationId, date = new Date()) => {
-	const subscription = await getOrganizationSubscription(organizationId, date);
+const resolveUsageWindowDescriptor = async (
+	organizationId,
+	date = new Date(),
+	explicitSubscription = null,
+) => {
+	const subscription =
+		explicitSubscription || (await getOrganizationSubscription(organizationId, date));
 	return buildUsageWindowDescriptor({
 		subscription,
 		date,
@@ -229,10 +234,18 @@ const recordChatPeak = async ({
 	return usage.toObject();
 };
 
-const getMonthlyUsage = async (organizationId, date = new Date()) => {
+const getMonthlyUsage = async (
+	organizationId,
+	date = new Date(),
+	{ subscription: explicitSubscription = null } = {},
+) => {
 	const orgId = toObjectId(organizationId);
 	if (!orgId) return null;
-	const descriptor = await resolveUsageWindowDescriptor(orgId, date);
+	const descriptor = await resolveUsageWindowDescriptor(
+		orgId,
+		date,
+		explicitSubscription,
+	);
 	const usage = await UsageMonthly.findOne({
 		organizationId: orgId,
 		periodKey: descriptor.periodKey,

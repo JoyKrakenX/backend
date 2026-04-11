@@ -15,8 +15,10 @@ const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationS
 const { getRedisClient } = require('../services/redisService');
 const {
 	SOCKET_HEARTBEAT_INTERVAL_MS,
+	buildPresencePayloadFromSockets,
 	getRedisPresenceSnapshot,
 	removeSocketPresence,
+	syncPresenceIndexWithActiveSocketIds,
 	touchSocketPresence,
 } = require('../services/chatPresenceService');
 const { recordChatPeak } = require('../services/billing/usageService');
@@ -32,6 +34,11 @@ const {
 } = require('../services/chatModerationService');
 const { moderateChatMessage } = require('../services/contentModerationService');
 const {
+	buildFreshChatMessagePayload,
+	formatChatMessagePayload,
+	normalizeObjectId,
+} = require('../services/chatMessagePayloadService');
+const {
 	canManageSurveyByOrganization,
 } = require('../services/surveyAuthorizationService');
 
@@ -40,6 +47,7 @@ const buildRoomName = (surveyId) => `survey-${String(surveyId)}`;
 const resolveSurveyModelFromType = (type) => (type === 'multiple' ? Survey_2 : Survey);
 const resolveSurveyModelFromName = (surveyModelName) =>
 	surveyModelName === 'Survey_2' ? Survey_2 : Survey;
+const SOCKET_JOIN_CHAT_ENTITLEMENT_TTL_MS = 10 * 1000;
 
 const extractSocketToken = (socket) => {
 	const authToken = socket?.handshake?.auth?.token;
@@ -82,11 +90,12 @@ const resolveSocketUser = async (socket) => {
 const emitSocketChatError = async (
 	socket,
 	error,
-	{ surveyId = null, surveyModel = null, userId = null } = {},
+	{ surveyId = null, surveyModel = null, userId = null, clientMessageId = null } = {},
 ) => {
 	if (!isChatModerationError(error)) {
 		socket.emit('error', {
 			message: error?.message || 'Erreur chat.',
+			clientMessageId: clientMessageId || undefined,
 		});
 		return;
 	}
@@ -97,6 +106,9 @@ const emitSocketChatError = async (
 	};
 	if (error?.moderation) {
 		payload.moderation = error.moderation;
+	}
+	if (clientMessageId) {
+		payload.clientMessageId = clientMessageId;
 	}
 
 	if (
@@ -114,6 +126,45 @@ const emitSocketChatError = async (
 	}
 
 	socket.emit('error', payload);
+};
+
+const clearSocketJoinChatEntitlement = (socket) => {
+	if (socket?.data) {
+		socket.data.joinChatEntitlement = null;
+	}
+};
+
+const getSocketJoinChatEntitlement = async ({
+	socket,
+	organizationId,
+	authUser,
+}) => {
+	const normalizedOrganizationId = normalizeObjectId(organizationId);
+	const cachedEntitlement = socket?.data?.joinChatEntitlement;
+	if (
+		cachedEntitlement?.organizationId &&
+		cachedEntitlement.organizationId === normalizedOrganizationId &&
+		Number(cachedEntitlement.expiresAt || 0) > Date.now()
+	) {
+		return cachedEntitlement.value;
+	}
+
+	const entitlement = await authorizeAction({
+		action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
+		organizationId: normalizedOrganizationId,
+		userId: authUser.id,
+		userEmail: authUser.email,
+	});
+
+	if (socket?.data) {
+		socket.data.joinChatEntitlement = {
+			organizationId: normalizedOrganizationId,
+			expiresAt: Date.now() + SOCKET_JOIN_CHAT_ENTITLEMENT_TTL_MS,
+			value: entitlement,
+		};
+	}
+
+	return entitlement;
 };
 
 module.exports = (io) => {
@@ -158,14 +209,50 @@ module.exports = (io) => {
 		};
 	};
 
+	const getAuthoritativeRoomPresencePayload = async (roomName) => {
+		if (!roomName || typeof io.in(roomName).fetchSockets !== 'function') {
+			return null;
+		}
+
+		try {
+			const sockets = await io.in(roomName).fetchSockets();
+			return buildPresencePayloadFromSockets(sockets, roomName);
+		} catch (error) {
+			console.error('chat.fetchSockets presence error:', error?.message || error);
+			return null;
+		}
+	};
+
 	const emitRoomPresence = async ({ roomName, organizationId, surveyId }) => {
 		const redis = await getRedisClient();
+		const authoritativePayload = await getAuthoritativeRoomPresencePayload(roomName);
+
+		if (redis && organizationId && surveyId && authoritativePayload) {
+			await syncPresenceIndexWithActiveSocketIds(redis, {
+				organizationId,
+				surveyId,
+				activeSocketIds: authoritativePayload.activeSocketIds,
+			});
+		}
+
+		if (authoritativePayload) {
+			io.to(roomName).emit('onlineUsersState', {
+				roomId: authoritativePayload.roomId,
+				onlineCount: authoritativePayload.onlineCount,
+				users: authoritativePayload.users,
+			});
+			return;
+		}
+
 		const redisPayload = await getRedisPresenceSnapshot(redis, {
 			roomName,
 			organizationId,
 			surveyId,
 		});
-		io.to(roomName).emit('onlineUsersState', redisPayload || buildLocalPresencePayload(roomName));
+		io.to(roomName).emit(
+			'onlineUsersState',
+			redisPayload || buildLocalPresencePayload(roomName),
+		);
 	};
 
 	const stopSocketPresenceHeartbeat = (socket) => {
@@ -326,11 +413,10 @@ module.exports = (io) => {
 					survey,
 					authUser.id,
 				);
-				const entitlement = await authorizeAction({
-					action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
+				const entitlement = await getSocketJoinChatEntitlement({
+					socket,
 					organizationId: surveyOrganizationId,
-					userId: authUser.id,
-					userEmail: authUser.email,
+					authUser,
 				});
 				if (!entitlement.allowed) {
 					return socket.emit('error', {
@@ -370,6 +456,7 @@ module.exports = (io) => {
 						organizationId: previousRemoval?.organizationId,
 						surveyId: previousRemoval?.surveyId,
 					});
+					clearSocketJoinChatEntitlement(socket);
 				}
 
 				socket.join(roomName);
@@ -460,6 +547,7 @@ module.exports = (io) => {
 					socket.data.organizationId = null;
 					socket.data.surveyId = null;
 					socket.data.surveyType = null;
+					clearSocketJoinChatEntitlement(socket);
 
 					await emitRoomPresence({
 						roomName,
@@ -534,15 +622,19 @@ module.exports = (io) => {
 				const message = String(data.message || '').trim();
 				const replyTo = data.replyTo || null;
 				const locale = data.locale || null;
+				const clientMessageId =
+					String(data.clientMessageId || '').trim() || null;
 
 				if (!message) {
 					return socket.emit('error', {
 						message: 'Le message ne peut pas etre vide',
+						clientMessageId: clientMessageId || undefined,
 					});
 				}
 				if (message.length > 500) {
 					return socket.emit('error', {
 						message: 'Le message est trop long (max 500 caracteres)',
+						clientMessageId: clientMessageId || undefined,
 					});
 				}
 
@@ -551,25 +643,28 @@ module.exports = (io) => {
 				if (!survey) {
 					return socket.emit('error', {
 						message: 'Sondage introuvable',
+						clientMessageId: clientMessageId || undefined,
 					});
 				}
 				if (survey.isClosed) {
 					return socket.emit('error', {
 						message: 'Le sondage est cloture. Vous ne pouvez plus envoyer de messages.',
+						clientMessageId: clientMessageId || undefined,
 					});
 				}
 
-				const surveyOrganizationId = await resolveSurveyOrganizationId(survey);
-				const entitlement = await authorizeAction({
-					action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
+				const surveyOrganizationId =
+					socket.data?.organizationId || (await resolveSurveyOrganizationId(survey));
+				const entitlement = await getSocketJoinChatEntitlement({
+					socket,
 					organizationId: surveyOrganizationId,
-					userId: authUser.id,
-					userEmail: authUser.email,
+					authUser,
 				});
 				if (!entitlement.allowed) {
 					return socket.emit('error', {
 						code: entitlement.code,
 						message: entitlement.message,
+						clientMessageId: clientMessageId || undefined,
 					});
 				}
 				await assertViewerCanInteract({
@@ -631,35 +726,32 @@ module.exports = (io) => {
 
 				await chatMessage.save();
 
-				const populatedMessage = await ChatMessage.findById(chatMessage._id)
-					.populate('userId', 'pseudo picture')
-					.lean();
-
-				const formattedMessage = {
-					...populatedMessage,
-					id: populatedMessage._id,
-					likeCount: 0,
-					dislikeCount: 0,
-					userLiked: false,
-					userDisliked: false,
-					user: {
-						id: populatedMessage.userId ? populatedMessage.userId._id : null,
-						pseudo: populatedMessage.userPseudo || 'Utilisateur',
-						picture:
-							populatedMessage.userId && populatedMessage.userId.picture
-								? populatedMessage.userId.picture
-								: `https://ui-avatars.com/api/?name=${encodeURIComponent(
-										populatedMessage.userPseudo || 'Utilisateur',
-								  )}&background=6366f1&color=fff`,
-					},
-					replyTo: populatedMessage.replyTo,
-					replyToInfo: populatedMessage.replyToInfo,
-				};
-
-				delete formattedMessage._id;
-				delete formattedMessage.__v;
+				const formattedMessage = buildFreshChatMessagePayload(chatMessage, {
+					userId: authUser.id,
+					pseudo: authUser.pseudo,
+					picture: authUser.picture || socket.data?.picture || null,
+				});
+				if (clientMessageId) {
+					formattedMessage.clientMessageId = clientMessageId;
+				}
 
 				io.to(buildRoomName(surveyId)).emit('newMessage', formattedMessage);
+				const replyTargetUserId = normalizeObjectId(replyToInfo?.userId);
+				if (
+					replyTargetUserId &&
+					replyTargetUserId !== String(authUser.id)
+				) {
+					io.to(buildSurveyUserRoomName(surveyId, replyTargetUserId)).emit(
+						'replyNotification',
+						{
+							targetUserId: replyTargetUserId,
+							fromUser: authUser.pseudo || 'Utilisateur',
+							message,
+							messageId: String(formattedMessage.id || chatMessage._id),
+							surveyId: String(surveyId),
+						},
+					);
+				}
 			} catch (error) {
 				console.error('chat.sendMessage error:', error);
 				await emitSocketChatError(socket, error, {
@@ -669,6 +761,8 @@ module.exports = (io) => {
 							'Survey_2'
 						:	'Survey',
 					userId: socket.data?.authUser?.id || null,
+					clientMessageId:
+						String(data?.clientMessageId || '').trim() || null,
 				});
 			}
 		});
@@ -698,12 +792,15 @@ module.exports = (io) => {
 					return;
 				}
 
-				const surveyOrganizationId = await resolveSurveyOrganizationId(survey);
-				const entitlement = await authorizeAction({
-					action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
+				const surveyOrganizationId =
+					socket.data?.surveyId === String(chatMessage.surveyId) &&
+					socket.data?.organizationId ?
+						socket.data.organizationId
+					:	await resolveSurveyOrganizationId(survey);
+				const entitlement = await getSocketJoinChatEntitlement({
+					socket,
 					organizationId: surveyOrganizationId,
-					userId: authUser.id,
-					userEmail: authUser.email,
+					authUser,
 				});
 				if (!entitlement.allowed) {
 					socket.emit('error', {
@@ -770,9 +867,14 @@ module.exports = (io) => {
 			}
 		});
 
-		socket.on('leaveChatRoom', async ({ surveyId, pseudo } = {}) => {
+		socket.on('leaveChatRoom', async ({ surveyId, pseudo } = {}, acknowledge) => {
 			const roomName = socket.data?.roomName || (surveyId ? buildRoomName(surveyId) : null);
-			if (!roomName) return;
+			if (!roomName) {
+				if (typeof acknowledge === 'function') {
+					acknowledge({ ok: true, roomId: null });
+				}
+				return;
+			}
 
 			socket.leave(roomName);
 			if (socket.data?.userRoomName) {
@@ -808,10 +910,20 @@ module.exports = (io) => {
 			socket.data.surveyId = null;
 			socket.data.surveyType = null;
 			socket.data.canModerateChat = false;
+			clearSocketJoinChatEntitlement(socket);
+
+			if (typeof acknowledge === 'function') {
+				acknowledge({
+					ok: true,
+					roomId: roomName,
+					onlineCount: removal?.concurrentCount || 0,
+				});
+			}
 		});
 
 		socket.on('disconnect', async () => {
 			const removal = await clearSocketPresence(socket);
+			clearSocketJoinChatEntitlement(socket);
 			if (removal) {
 				if (removal.isLastSocketForUser) {
 					socket.to(removal.roomName).emit('userLeft', {

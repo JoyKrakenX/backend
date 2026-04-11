@@ -392,6 +392,15 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 		const normalizedReason = String(req.body.reason || '').trim();
+		const commentModerationPromise = moderateSurveyComment({
+			text: normalizedReason,
+			locale: req.body.locale,
+			surveyId: survey._id,
+			surveyType: 'multiple',
+			surveyModel: 'Opinion_2',
+			userId: req.userId,
+			userPseudoSnapshot: req.userPseudo,
+		});
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
@@ -430,15 +439,7 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
-		const commentModerationResult = await moderateSurveyComment({
-			text: normalizedReason,
-			locale: req.body.locale,
-			surveyId: survey._id,
-			surveyType: 'multiple',
-			surveyModel: 'Opinion_2',
-			userId: req.userId,
-			userPseudoSnapshot: req.userPseudo,
-		});
+		const commentModerationResult = await commentModerationPromise;
 
 		const opinion = new Opinion_2({
 			answer: String(req.body.choice).trim(),
@@ -457,48 +458,7 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
-		await trackVote({
-			organizationId,
-			idempotencyKey: `vote:${String(opinion._id)}`,
-			meta: {
-				surveyId: String(survey._id),
-				type: 'multiple',
-				userId: String(req.userId),
-			},
-		});
-		const io = req.app.get('io');
-		const normalizedSurvey = normalizeSurveyForResponse(survey);
-		const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
-			Opinion_2,
-			survey._id,
-			normalizedSurvey.optionKeys,
-			buildStatusFilter('clean'),
-		);
-		emitClassicMultipleOpinion({ io, survey, opinion });
-		emitClassicMultipleCounts({
-			io,
-			survey,
-			options: normalizedSurvey.options,
-			counts,
-			totalOpinions,
-			isClosed: survey.isClosed,
-		});
-
-		emitSurveyFeedUpdate(req.app.get('io'), {
-			action: 'vote',
-			surveyId: survey._id,
-			type: 'multiple',
-			explain: survey.explain,
-			status: normalizeSurveyStatus(survey.status),
-			isClosed: Boolean(survey.isClosed),
-			ownerUserId: survey.userId,
-			organizationId: organizationId || survey.organizationId || null,
-			createdAt: survey.createdAt,
-			endedAt: survey.endedAt,
-			totalOpinions,
-			occurredAt: new Date(),
-		});
-		return res.status(201).json({
+		res.status(201).json({
 			message: 'Opinion enregistree !',
 			hasParticipated: true,
 			canVote: false,
@@ -507,6 +467,55 @@ exports.submitOpinion = async (req, res) => {
 			fraudReview: opinion.fraudStatus === 'quarantined',
 			commentModeration: buildCommentSubmissionModerationPayload(opinion),
 		});
+
+		const io = req.app.get('io');
+		const normalizedSurvey = normalizeSurveyForResponse(survey);
+		void (async () => {
+			try {
+				await trackVote({
+					organizationId,
+					idempotencyKey: `vote:${String(opinion._id)}`,
+					meta: {
+						surveyId: String(survey._id),
+						type: 'multiple',
+						userId: String(req.userId),
+					},
+				});
+				const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
+					Opinion_2,
+					survey._id,
+					normalizedSurvey.optionKeys,
+					buildStatusFilter('clean'),
+				);
+				emitClassicMultipleOpinion({ io, survey, opinion });
+				emitClassicMultipleCounts({
+					io,
+					survey,
+					options: normalizedSurvey.options,
+					counts,
+					totalOpinions,
+					isClosed: survey.isClosed,
+				});
+
+				emitSurveyFeedUpdate(req.app.get('io'), {
+					action: 'vote',
+					surveyId: survey._id,
+					type: 'multiple',
+					explain: survey.explain,
+					status: normalizeSurveyStatus(survey.status),
+					isClosed: Boolean(survey.isClosed),
+					ownerUserId: survey.userId,
+					organizationId: organizationId || survey.organizationId || null,
+					createdAt: survey.createdAt,
+					endedAt: survey.endedAt,
+					totalOpinions,
+					occurredAt: new Date(),
+				});
+			} catch (postCommitError) {
+				console.error('survey_2.submitOpinion.postCommit error:', postCommitError);
+			}
+		})();
+		return;
 	} catch (error) {
 		if (error?.code === 11000) {
 			return res.status(403).json({ message: 'Vous avez deja repondu a ce sondage.' });

@@ -24,6 +24,28 @@ const {
 	SUBSCRIPTION_STATUSES,
 } = require('./constants');
 
+const ENTITLEMENT_CACHE_TTLS_MS = Object.freeze({
+	userIdentity: 5 * 60 * 1000,
+	orgRole: 60 * 1000,
+	ownerExempt: 60 * 1000,
+	subscription: 15 * 1000,
+	plan: 10 * 60 * 1000,
+	addons: 15 * 1000,
+	adminsCurrent: 30 * 1000,
+	joinChatAction: 10 * 1000,
+});
+
+const entitlementCaches = {
+	userIdentity: new Map(),
+	orgRole: new Map(),
+	ownerExempt: new Map(),
+	subscription: new Map(),
+	plan: new Map(),
+	addons: new Map(),
+	adminsCurrent: new Map(),
+	joinChatAction: new Map(),
+};
+
 const toSafeCount = (value) => {
 	const parsed = Number(value);
 	if (!Number.isFinite(parsed) || parsed < 0) return 0;
@@ -51,11 +73,64 @@ const canWriteWithStatus = (status) =>
 		SUBSCRIPTION_STATUSES.PAST_DUE,
 	].includes(String(status || ''));
 
+const getCacheKeyPart = (value) => String(value || '');
+
+const getCachedAsync = async (cache, key, ttlMs, loader) => {
+	if (!ttlMs || ttlMs <= 0 || !cache || !key) {
+		return loader();
+	}
+
+	const now = Date.now();
+	const existingEntry = cache.get(key);
+	if (existingEntry && existingEntry.expiresAt > now) {
+		return existingEntry.valuePromise;
+	}
+
+	const valuePromise = Promise.resolve()
+		.then(loader)
+		.catch((error) => {
+			const currentEntry = cache.get(key);
+			if (currentEntry && currentEntry.valuePromise === valuePromise) {
+				cache.delete(key);
+			}
+			throw error;
+		});
+
+	cache.set(key, {
+		expiresAt: now + ttlMs,
+		valuePromise,
+	});
+
+	return valuePromise;
+};
+
+const getCachedPlanByCode = async (planCode) => {
+	const normalizedPlanCode = String(planCode || '').trim().toUpperCase();
+	if (!normalizedPlanCode) return null;
+
+	return getCachedAsync(
+		entitlementCaches.plan,
+		normalizedPlanCode,
+		ENTITLEMENT_CACHE_TTLS_MS.plan,
+		() => getPlanByCode(normalizedPlanCode),
+	);
+};
+
 const getUserIdentity = async ({ userId, userEmail }) => {
 	let email = String(userEmail || '').trim().toLowerCase();
 	if (!email && userId) {
-		const dbUser = await User.findById(userId).select('email').lean();
-		email = String(dbUser?.email || '').trim().toLowerCase();
+		const identity = await getCachedAsync(
+			entitlementCaches.userIdentity,
+			getCacheKeyPart(userId),
+			ENTITLEMENT_CACHE_TTLS_MS.userIdentity,
+			async () => {
+				const dbUser = await User.findById(userId).select('email').lean();
+				return {
+					email: String(dbUser?.email || '').trim().toLowerCase(),
+				};
+			},
+		);
+		email = identity.email;
 	}
 	return {
 		email,
@@ -65,13 +140,20 @@ const getUserIdentity = async ({ userId, userEmail }) => {
 
 const getOrganizationRole = async (organizationId, userId) => {
 	if (!organizationId || !userId) return null;
-	const member = await OrganizationMember.findOne({
-		organizationId,
-		userId,
-	})
-		.select('role')
-		.lean();
-	return member?.role || null;
+	return getCachedAsync(
+		entitlementCaches.orgRole,
+		`${getCacheKeyPart(organizationId)}:${getCacheKeyPart(userId)}`,
+		ENTITLEMENT_CACHE_TTLS_MS.orgRole,
+		async () => {
+			const member = await OrganizationMember.findOne({
+				organizationId,
+				userId,
+			})
+				.select('role')
+				.lean();
+			return member?.role || null;
+		},
+	);
 };
 
 const isBillingExemptForOwnedOrganization = async ({
@@ -80,17 +162,30 @@ const isBillingExemptForOwnedOrganization = async ({
 	identity,
 }) => {
 	if (!organizationId || !userId || !identity?.isBillingExempt) return false;
-	const organization = await Organization.findById(organizationId)
-		.select('ownerUserId')
-		.lean();
-	if (!organization?.ownerUserId) return false;
-	return String(organization.ownerUserId) === String(userId);
+	return getCachedAsync(
+		entitlementCaches.ownerExempt,
+		`${getCacheKeyPart(organizationId)}:${getCacheKeyPart(userId)}`,
+		ENTITLEMENT_CACHE_TTLS_MS.ownerExempt,
+		async () => {
+			const organization = await Organization.findById(organizationId)
+				.select('ownerUserId')
+				.lean();
+			if (!organization?.ownerUserId) return false;
+			return String(organization.ownerUserId) === String(userId);
+		},
+	);
 };
 
-const computeUsageSnapshot = async ({ organizationId, explicitUsage }) => {
+const computeUsageSnapshot = async ({
+	organizationId,
+	explicitUsage,
+	explicitSubscription = null,
+}) => {
 	if (explicitUsage) return explicitUsage;
 	return (
-		(await getMonthlyUsage(organizationId)) || {
+		(await getMonthlyUsage(organizationId, new Date(), {
+			subscription: explicitSubscription,
+		})) || {
 			counts: { votes: 0, surveys: 0, exports: 0 },
 			chatPeakMax: 0,
 			adminsPeak: 1,
@@ -161,9 +256,14 @@ const resolveEntitlementContext = async ({
 	subscription: explicitSubscription = null,
 	usage: explicitUsage = null,
 	role: explicitRole = null,
+	includeUsage = true,
+	includeAdminsCurrent = true,
+	includeRole = true,
 }) => {
 	const identity = await getUserIdentity({ userId, userEmail });
-	const role = explicitRole || (await getOrganizationRole(organizationId, userId));
+	const role =
+		explicitRole ||
+		(includeRole ? await getOrganizationRole(organizationId, userId) : null);
 	const billingExempt = await isBillingExemptForOwnedOrganization({
 		organizationId,
 		userId,
@@ -171,32 +271,57 @@ const resolveEntitlementContext = async ({
 	});
 
 	const subscription =
-		explicitSubscription || (await getOrganizationSubscription(organizationId));
+		explicitSubscription ||
+		(await getCachedAsync(
+			entitlementCaches.subscription,
+			getCacheKeyPart(organizationId),
+			ENTITLEMENT_CACHE_TTLS_MS.subscription,
+			() => getOrganizationSubscription(organizationId),
+		));
 	const effectivePlanCode = getEffectivePlanCode(subscription);
 	const basePlanCode = String(subscription?.planCode || '').trim().toUpperCase();
 	const basePlan =
 		explicitBasePlan ||
 		(explicitPlan && explicitPlan.code === basePlanCode ? explicitPlan : null) ||
-		(await getPlanByCode(basePlanCode));
+		(await getCachedPlanByCode(basePlanCode));
 	const effectivePlan =
-		explicitPlan || (effectivePlanCode ? await getPlanByCode(effectivePlanCode) : null);
-	const usage = await computeUsageSnapshot({
-		organizationId,
-		explicitUsage,
-	});
+		explicitPlan ||
+		(effectivePlanCode ? await getCachedPlanByCode(effectivePlanCode) : null);
+	const usage =
+		includeUsage ?
+			await computeUsageSnapshot({
+				organizationId,
+				explicitUsage,
+				explicitSubscription: subscription,
+			})
+		:	null;
 	const adminsCurrent =
 		Number.isFinite(Number(explicitUsage?.adminsCurrent))
 			? Math.max(0, Math.trunc(Number(explicitUsage.adminsCurrent)))
-			: await OrganizationMember.countDocuments({
-					organizationId,
-					role: { $in: ['owner', 'admin'] },
-			  });
+			: includeAdminsCurrent ?
+				await getCachedAsync(
+					entitlementCaches.adminsCurrent,
+					getCacheKeyPart(organizationId),
+					ENTITLEMENT_CACHE_TTLS_MS.adminsCurrent,
+					() =>
+						OrganizationMember.countDocuments({
+							organizationId,
+							role: { $in: ['owner', 'admin'] },
+						}),
+				  )
+			:	1;
 	const addons =
 		subscription?._id
-			? await getActiveAddonsForSubscription({
-					organizationId,
-					subscriptionId: subscription._id,
-			  })
+			? await getCachedAsync(
+					entitlementCaches.addons,
+					`${getCacheKeyPart(organizationId)}:${getCacheKeyPart(subscription._id)}`,
+					ENTITLEMENT_CACHE_TTLS_MS.addons,
+					() =>
+						getActiveAddonsForSubscription({
+							organizationId,
+							subscriptionId: subscription._id,
+						}),
+			  )
 			: [];
 	const effectiveQuotas = mergePlanQuotasWithAddons(effectivePlan?.quotas || {}, addons);
 	const resolvedRole = billingExempt && !role ? 'owner' : role;
@@ -224,7 +349,7 @@ const resolveEntitlementContext = async ({
 	};
 };
 
-const authorizeAction = async ({
+const authorizeActionUncached = async ({
 	action,
 	organizationId,
 	userId,
@@ -272,6 +397,9 @@ const authorizeAction = async ({
 		subscription: explicitSubscription,
 		usage: explicitUsage,
 		role: explicitRole,
+		includeUsage: action !== ENTITLEMENT_ACTIONS.JOIN_CHAT,
+		includeAdminsCurrent: action === ENTITLEMENT_ACTIONS.MANAGE_ADMINS,
+		includeRole: isManagementAction,
 	});
 
 	if (isManagementAction && !['owner', 'admin'].includes(String(context.role || ''))) {
@@ -449,7 +577,56 @@ const authorizeAction = async ({
 	return buildAllowed(resultPayload);
 };
 
+const authorizeAction = async (params) => {
+	const {
+		action,
+		organizationId,
+		userId,
+		userEmail,
+		plan,
+		basePlan,
+		subscription,
+		usage,
+		role,
+	} = params || {};
+
+	const shouldUseJoinChatCache =
+		action === ENTITLEMENT_ACTIONS.JOIN_CHAT &&
+		!plan &&
+		!basePlan &&
+		!subscription &&
+		!usage &&
+		!role &&
+		organizationId &&
+		userId;
+
+	if (!shouldUseJoinChatCache) {
+		return authorizeActionUncached(params);
+	}
+
+	const joinChatCacheKey = [
+		getCacheKeyPart(action),
+		getCacheKeyPart(organizationId),
+		getCacheKeyPart(userId),
+		getCacheKeyPart(String(userEmail || '').trim().toLowerCase()),
+	].join(':');
+
+	return getCachedAsync(
+		entitlementCaches.joinChatAction,
+		joinChatCacheKey,
+		ENTITLEMENT_CACHE_TTLS_MS.joinChatAction,
+		() => authorizeActionUncached(params),
+	);
+};
+
+const clearEntitlementCaches = () => {
+	for (const cache of Object.values(entitlementCaches)) {
+		cache.clear();
+	}
+};
+
 module.exports = {
 	authorizeAction,
 	resolveEntitlementContext,
+	clearEntitlementCaches,
 };

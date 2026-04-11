@@ -343,6 +343,18 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 		const normalizedReason = String(req.body.reason || '').trim();
+		const commentModerationPromise =
+			normalizedReason ?
+				moderateSurveyComment({
+					text: normalizedReason,
+					locale: req.body.locale,
+					surveyId: survey._id,
+					surveyType: 'binary',
+					surveyModel: 'Opinion',
+					userId: req.userId,
+					userPseudoSnapshot: req.userPseudo,
+				})
+			:	Promise.resolve(null);
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
@@ -381,18 +393,7 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
-		const commentModerationResult =
-			normalizedReason ?
-				await moderateSurveyComment({
-					text: normalizedReason,
-					locale: req.body.locale,
-					surveyId: survey._id,
-					surveyType: 'binary',
-					surveyModel: 'Opinion',
-					userId: req.userId,
-					userPseudoSnapshot: req.userPseudo,
-				})
-			:	null;
+		const commentModerationResult = await commentModerationPromise;
 
 		const opinion = new Opinion({
 			answer: req.body.answer,
@@ -413,36 +414,6 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
-		await trackVote({
-			organizationId,
-			idempotencyKey: `vote:${String(opinion._id)}`,
-			meta: {
-				surveyId: String(survey._id),
-				type: 'binary',
-				userId: String(req.userId),
-			},
-		});
-
-		const io = req.app.get('io');
-		const counts = await getBinaryCounts(survey._id, Opinion);
-		emitClassicBinaryOpinion(io, survey, opinion);
-		emitClassicBinaryCounts(io, survey, counts, survey.isClosed);
-
-		emitSurveyFeedUpdate(req.app.get('io'), {
-			action: 'vote',
-			surveyId: survey._id,
-			type: 'binary',
-			explain: survey.explain,
-			status: normalizeSurveyStatus(survey.status),
-			isClosed: Boolean(survey.isClosed),
-			ownerUserId: survey.userId,
-			organizationId: organizationId || survey.organizationId || null,
-			createdAt: survey.createdAt,
-			endedAt: survey.endedAt,
-			totalOpinions: counts.totalOpinions,
-			occurredAt: new Date(),
-		});
-
 		res.status(201).json({
 			message: 'Opinion enregistree !',
 			hasParticipated: true,
@@ -452,6 +423,42 @@ exports.submitOpinion = async (req, res) => {
 			fraudReview: opinion.fraudStatus === 'quarantined',
 			commentModeration: buildCommentSubmissionModerationPayload(opinion),
 		});
+
+		const io = req.app.get('io');
+		void (async () => {
+			try {
+				await trackVote({
+					organizationId,
+					idempotencyKey: `vote:${String(opinion._id)}`,
+					meta: {
+						surveyId: String(survey._id),
+						type: 'binary',
+						userId: String(req.userId),
+					},
+				});
+
+				const counts = await getBinaryCounts(survey._id, Opinion);
+				emitClassicBinaryOpinion(io, survey, opinion);
+				emitClassicBinaryCounts(io, survey, counts, survey.isClosed);
+
+				emitSurveyFeedUpdate(req.app.get('io'), {
+					action: 'vote',
+					surveyId: survey._id,
+					type: 'binary',
+					explain: survey.explain,
+					status: normalizeSurveyStatus(survey.status),
+					isClosed: Boolean(survey.isClosed),
+					ownerUserId: survey.userId,
+					organizationId: organizationId || survey.organizationId || null,
+					createdAt: survey.createdAt,
+					endedAt: survey.endedAt,
+					totalOpinions: counts.totalOpinions,
+					occurredAt: new Date(),
+				});
+			} catch (postCommitError) {
+				console.error('submitOpinion.postCommit error:', postCommitError);
+			}
+		})();
 	} catch (err) {
 		console.error('ERREUR dans submitOpinion:', err);
 		console.error('Stack trace:', err.stack);

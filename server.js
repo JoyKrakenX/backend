@@ -12,6 +12,7 @@ const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
 const { getRedisClient, getRedisSubscriber } = require('./services/redisService');
 const { registerBillingLifecycleJob } = require('./services/billing/billingLifecycleJob');
 const { registerFraudGraphJob } = require('./services/fraud/fraudGraphJobService');
+const { primeContentModeration } = require('./services/contentModerationService');
 
 const normalizePort = (val) => {
 	const port = parseInt(val, 10);
@@ -87,6 +88,14 @@ const start = async () => {
 	await configureSocketAdapter();
 	registerBillingLifecycleJob();
 	registerFraudGraphJob();
+	try {
+		await primeContentModeration();
+	} catch (error) {
+		console.error(
+			'Content moderation warmup failed:',
+			error?.message || error,
+		);
+	}
 	server.listen(port);
 };
 

@@ -1,6 +1,10 @@
 /** @format */
 
 const OpinionFlash = require('../models/Opinion_Flash');
+const {
+	isSurveyCommentModerationError,
+	assertOpinionCommentInteractable,
+} = require('../services/surveyCommentModerationService');
 
 const emitFlashReaction = (req, opinion) => {
 	const io = req.app.get('io');
@@ -17,6 +21,7 @@ exports.toggleLike = async (req, res) => {
 		if (!opinion) {
 			return res.status(404).json({ message: 'Opinion non trouvée' });
 		}
+		assertOpinionCommentInteractable(opinion);
 
 		const userId = req.userId.toString();
 
@@ -47,6 +52,9 @@ exports.toggleLike = async (req, res) => {
 			userDisliked: false,
 		});
 	} catch (err) {
+		if (isSurveyCommentModerationError(err)) {
+			return res.status(err.status).json({ code: err.code, message: err.message });
+		}
 		console.error(err);
 		res.status(500).json({ message: 'Erreur serveur' });
 	}
@@ -58,6 +66,7 @@ exports.toggleDislike = async (req, res) => {
 		if (!opinion) {
 			return res.status(404).json({ message: 'Opinion non trouvée' });
 		}
+		assertOpinionCommentInteractable(opinion);
 
 		const userId = req.userId.toString();
 
@@ -86,6 +95,9 @@ exports.toggleDislike = async (req, res) => {
 			userDisliked: !disliked,
 		});
 	} catch (err) {
+		if (isSurveyCommentModerationError(err)) {
+			return res.status(err.status).json({ code: err.code, message: err.message });
+		}
 		console.error(err);
 		res.status(500).json({ message: 'Erreur serveur' });
 	}

@@ -50,6 +50,32 @@ const opinion2FlashSchema = new mongoose.Schema({
 	},
 	reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 	reviewedAt: { type: Date, default: null },
+	commentDeletedAt: { type: Date, default: null },
+	commentDeletedBy: {
+		type: mongoose.Schema.Types.ObjectId,
+		ref: 'User',
+		default: null,
+	},
+	commentDeletedSource: {
+		type: String,
+		enum: ['manual', 'auto'],
+		default: null,
+	},
+	commentModerationLogId: {
+		type: mongoose.Schema.Types.ObjectId,
+		ref: 'ContentModerationLog',
+		default: null,
+	},
+	commentModerationReasonCodes: { type: [String], default: [] },
+	commentModerationSource: {
+		type: String,
+		enum: ['openai', 'ldnoobw', 'hybrid', 'fallback'],
+		default: null,
+	},
+	commentModerationLocale: {
+		type: String,
+		default: null,
+	},
 
 	createdAt: { type: Date, default: Date.now },
 
@@ -78,6 +104,20 @@ opinion2FlashSchema.index(
 	{ surveyId: 1, fraudStatus: 1, createdAt: -1 },
 	{
 		name: 'surveyId_fraudStatus_createdAt',
+		background: true,
+	},
+);
+opinion2FlashSchema.index(
+	{ surveyId: 1, commentDeletedAt: 1, createdAt: -1 },
+	{
+		name: 'surveyId_commentDeletedAt_createdAt',
+		background: true,
+	},
+);
+opinion2FlashSchema.index(
+	{ surveyId: 1, commentDeletedSource: 1, createdAt: -1 },
+	{
+		name: 'surveyId_commentDeletedSource_createdAt',
 		background: true,
 	},
 );

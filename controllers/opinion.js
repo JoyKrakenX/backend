@@ -1,6 +1,10 @@
 /** @format */
 
 const Opinion = require('../models/Opinion');
+const {
+	isSurveyCommentModerationError,
+	assertOpinionCommentInteractable,
+} = require('../services/surveyCommentModerationService');
 
 const emitClassicReaction = (req, opinion) => {
 	const io = req.app.get('io');
@@ -20,6 +24,8 @@ exports.toggleLike = async (req, res, next) => {
 		const opinion = await Opinion.findById(req.params.id);
 		if (!opinion)
 			return res.status(404).json({ message: 'Opinion non trouvée' });
+
+		assertOpinionCommentInteractable(opinion);
 
 		const userId = req.userId.toString();
 
@@ -54,6 +60,9 @@ exports.toggleLike = async (req, res, next) => {
 			userDisliked: false,
 		});
 	} catch (err) {
+		if (isSurveyCommentModerationError(err)) {
+			return res.status(err.status).json({ code: err.code, message: err.message });
+		}
 		console.error(err);
 		res.status(500).json({ message: 'Erreur serveur' });
 	}
@@ -64,6 +73,8 @@ exports.toggleDislike = async (req, res, next) => {
 		const opinion = await Opinion.findById(req.params.id);
 		if (!opinion)
 			return res.status(404).json({ message: 'Opinion non trouvée' });
+
+		assertOpinionCommentInteractable(opinion);
 
 		const userId = req.userId.toString();
 
@@ -98,6 +109,9 @@ exports.toggleDislike = async (req, res, next) => {
 			userDisliked: !disliked,
 		});
 	} catch (err) {
+		if (isSurveyCommentModerationError(err)) {
+			return res.status(err.status).json({ code: err.code, message: err.message });
+		}
 		console.error(err);
 		res.status(500).json({ message: 'Erreur serveur' });
 	}

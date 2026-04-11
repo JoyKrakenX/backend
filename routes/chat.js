@@ -1,16 +1,16 @@
 /** @format */
 
 const express = require('express');
-const router = express.Router();
+
 const auth = require('../middlewares/auth');
 const { sensitiveRateLimit } = require('../middlewares/securityRateLimit');
 const { validateChatSendMessage } = require('../middlewares/requestValidators');
 const chatController = require('../controllers/chatController');
 
-// Récupérer les messages d'un sondage
+const router = express.Router();
+
 router.get('/:surveyId/messages', auth, chatController.getChatMessages);
 
-// Envoyer un message
 router.post(
 	'/:surveyId/messages',
 	sensitiveRateLimit,
@@ -19,23 +19,34 @@ router.post(
 	chatController.sendMessage,
 );
 
-// Gérer les likes/dislikes des messages
 router.post(
 	'/messages/:messageId/reaction',
 	sensitiveRateLimit,
 	auth,
-	chatController.toggleMessageLike
+	chatController.toggleMessageLike,
 );
 
-// Supprimer un message du chat
 router.delete(
 	'/messages/:messageId',
 	sensitiveRateLimit,
 	auth,
-	chatController.deleteMessage
+	chatController.deleteMessage,
 );
 
-// Récupérer les statistiques du chat
+router.post(
+	'/messages/:messageId/mute',
+	sensitiveRateLimit,
+	auth,
+	chatController.muteMessageAuthor,
+);
+
+router.post(
+	'/messages/:messageId/ban',
+	sensitiveRateLimit,
+	auth,
+	chatController.banMessageAuthor,
+);
+
 router.get('/:surveyId/stats', auth, chatController.getChatStats);
 
 module.exports = router;

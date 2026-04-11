@@ -66,12 +66,24 @@ const aggregateCountBySurvey = async (OpinionModel, surveyIds = [], mode = 'clea
 };
 
 const getIntegritySnapshotForSurvey = async (OpinionModel, surveyId) => {
-	const [rawCounts, cleanCounts, quarantinedCounts, confirmedFraudCounts, topSignalsRows] =
+	const [
+		rawCounts,
+		cleanCounts,
+		quarantinedCounts,
+		confirmedFraudCounts,
+		autoModeratedCommentCounts,
+		topSignalsRows,
+	] =
 		await Promise.all([
 			countDocumentsByMode(OpinionModel, { surveyId }, 'raw'),
 			countDocumentsByMode(OpinionModel, { surveyId }, 'clean'),
 			countDocumentsByMode(OpinionModel, { surveyId }, 'quarantine'),
 			OpinionModel.countDocuments({ surveyId, fraudStatus: 'confirmed_fraud' }),
+			OpinionModel.countDocuments({
+				surveyId,
+				commentDeletedAt: { $ne: null },
+				commentDeletedSource: 'auto',
+			}),
 			OpinionModel.aggregate([
 				{
 					$match: {
@@ -95,6 +107,7 @@ const getIntegritySnapshotForSurvey = async (OpinionModel, surveyId) => {
 	const clean = Number(cleanCounts || 0);
 	const quarantined = Number(quarantinedCounts || 0);
 	const confirmedFraud = Number(confirmedFraudCounts || 0);
+	const autoModerated = Number(autoModeratedCommentCounts || 0);
 	const confidenceScore =
 		raw <= 0 ? 100 : Math.max(0, Math.min(100, Math.round((clean / raw) * 100)));
 
@@ -103,6 +116,7 @@ const getIntegritySnapshotForSurvey = async (OpinionModel, surveyId) => {
 		cleanCounts: clean,
 		quarantinedCounts: quarantined,
 		confirmedFraudCounts: confirmedFraud,
+		autoModeratedCommentCounts: autoModerated,
 		confidenceScore,
 		topRiskSignals: (topSignalsRows || []).map((entry) => ({
 			code: String(entry?._id || ''),

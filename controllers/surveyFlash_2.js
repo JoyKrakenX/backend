@@ -5,9 +5,7 @@ const Opinion2Flash = require('../models/Opinion_2_Flash');
 const User = require('../models/User');
 const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
 const {
-	buildSurveyAlias,
 	buildAdminProfilesByUserId,
-	anonymizeOpinionsForSurvey,
 } = require('../utils/commentAnonymizer');
 const {
 	buildSurveyOptionPayload,
@@ -32,6 +30,20 @@ const {
 	buildStatusFilter,
 	getIntegritySnapshotForSurvey,
 } = require('../services/fraud/opinionFilterService');
+const {
+	SURVEY_COMMENT_ERROR_CODES,
+	isSurveyCommentModerationError,
+	getOpinionDisplayPseudo,
+	getOpinionVisibleReason,
+	prepareOpinionsForSurveyView,
+	prepareOpinionQueueItems,
+	validateOpinionCommentModerationTarget,
+	applyOpinionCommentDeletion,
+	restoreOpinionComment,
+	buildAutoModerationCommentFields,
+	buildCommentSubmissionModerationPayload,
+} = require('../services/surveyCommentModerationService');
+const { moderateSurveyComment } = require('../services/contentModerationService');
 
 const formatOpinion = (opinion, userId) => {
 	const likeCount = (opinion.likes && opinion.likes.length) || 0;
@@ -211,6 +223,19 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
+		const commentModerationResult =
+			reason ?
+				await moderateSurveyComment({
+					text: reason,
+					locale: req.body.locale,
+					surveyId: survey._id,
+					surveyType: 'multiple_flash',
+					surveyModel: 'Opinion_2_Flash',
+					userId: req.userId,
+					userPseudoSnapshot: req.userPseudo,
+				})
+			:	null;
+
 		const opinion = new Opinion2Flash({
 			answer: String(req.body.choice).trim(),
 			reason: reason || undefined,
@@ -221,6 +246,12 @@ exports.submitOpinion = async (req, res) => {
 				result: fraudDecision,
 				identity: req.riskIdentity || {},
 			}),
+			...(commentModerationResult ?
+				buildAutoModerationCommentFields({
+					decision: commentModerationResult.decision,
+					logEntry: commentModerationResult.logEntry,
+				})
+			:	{}),
 		});
 
 		await opinion.save();
@@ -245,13 +276,14 @@ exports.submitOpinion = async (req, res) => {
 			buildStatusFilter('clean'),
 		);
 
-		if (reason) {
+		const visibleReason = String(getOpinionVisibleReason(opinion) || '').trim();
+		if (visibleReason) {
 			io.to(room).emit('flash:new-opinion', {
 				_id: opinion._id,
 				answer: opinion.answer,
-				reason: opinion.reason || '',
+				reason: visibleReason,
 				surveyId: String(opinion.surveyId),
-				userPseudo: buildSurveyAlias(survey._id, opinion.userId),
+				userPseudo: getOpinionDisplayPseudo(opinion, survey._id),
 				createdAt: opinion.createdAt,
 				likeCount: 0,
 				dislikeCount: 0,
@@ -293,6 +325,7 @@ exports.submitOpinion = async (req, res) => {
 			canViewResults: true,
 			voteStatus: opinion.fraudStatus,
 			fraudReview: opinion.fraudStatus === 'quarantined',
+			commentModeration: buildCommentSubmissionModerationPayload(opinion),
 		});
 	} catch (error) {
 		if (error && error.code === 11000) {
@@ -369,12 +402,13 @@ exports.getDetailedResults = async (req, res) => {
 		const enrichedRawOpinions = opinions.map((opinion) =>
 			formatOpinion(opinion, req.userId),
 		);
-		const enrichedOpinions = anonymizeOpinionsForSurvey(
+		const enrichedOpinions = prepareOpinionsForSurveyView(
 			enrichedRawOpinions,
 			survey._id,
 			{
 				includeAdminProfile: allowAdminFilters,
 				includeVoterKey: allowAdminFilters,
+				includeExportPseudo: allowAdminFilters,
 				adminProfilesByUserId,
 				requesterUserId: req.userId,
 			},
@@ -463,19 +497,26 @@ exports.getQuarantineQueue = async (req, res) => {
 		const page = Math.max(1, Number.parseInt(req.query?.page || '1', 10));
 		const skip = (page - 1) * limit;
 		const statusFilterRaw = String(req.query?.status || '').trim().toLowerCase();
-		const allowedStatuses = ['quarantined', 'confirmed_fraud', 'all'];
+		const allowedStatuses = ['quarantined', 'confirmed_fraud', 'auto_moderated', 'all'];
 		const selectedStatus = allowedStatuses.includes(statusFilterRaw) ?
 				statusFilterRaw
 			:	'quarantined';
-		const queueStatusFilter =
+		const queueQuery =
 			selectedStatus === 'all' ?
-				{ $in: ['quarantined', 'confirmed_fraud'] }
-			:	selectedStatus;
+				{
+					$or: [
+						{ fraudStatus: { $in: ['quarantined', 'confirmed_fraud'] } },
+						{ commentDeletedAt: { $ne: null }, commentDeletedSource: 'auto' },
+					],
+				}
+			: selectedStatus === 'auto_moderated' ?
+				{ commentDeletedAt: { $ne: null }, commentDeletedSource: 'auto' }
+			:	{ fraudStatus: selectedStatus };
 
 		const [items, total] = await Promise.all([
-			Opinion2Flash.find({ surveyId: survey._id, fraudStatus: queueStatusFilter })
+			Opinion2Flash.find({ surveyId: survey._id, ...queueQuery })
 				.select(
-					'_id answer reason userPseudo userId createdAt fraudStatus fraudScore fraudReasons challengeType',
+					'_id answer reason userPseudo userId createdAt fraudStatus fraudScore fraudReasons challengeType commentDeletedAt commentDeletedSource commentModerationLogId commentModerationReasonCodes commentModerationSource commentModerationLocale',
 				)
 				.sort({ createdAt: -1 })
 				.skip(skip)
@@ -483,9 +524,23 @@ exports.getQuarantineQueue = async (req, res) => {
 				.lean(),
 			Opinion2Flash.countDocuments({
 				surveyId: survey._id,
-				fraudStatus: queueStatusFilter,
+				...queueQuery,
 			}),
 		]);
+
+		const queueItems = prepareOpinionQueueItems(items, survey._id, {
+			includeExportPseudo: true,
+			includeModeratedReason:
+				selectedStatus === 'auto_moderated' || selectedStatus === 'all',
+		});
+		const normalizedQueueItems = queueItems.map((item) => ({
+			...item,
+			queueKind:
+				item?.commentModeration?.isDeleted &&
+				item?.commentModeration?.deletedSource === 'auto' ?
+					'auto_moderated'
+				:	'fraud',
+		}));
 
 		return res.status(200).json({
 			surveyId: String(survey._id),
@@ -493,10 +548,154 @@ exports.getQuarantineQueue = async (req, res) => {
 			total,
 			page,
 			limit,
-			items,
+			items: normalizedQueueItems,
 		});
 	} catch (error) {
 		console.error('surveyFlash_2.getQuarantineQueue error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.restoreComment = async (req, res) => {
+	try {
+		const survey = await Survey_2.findById(req.params.id)
+			.select('userId organizationId')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Sondage introuvable',
+			});
+		}
+
+		const opinion = await Opinion2Flash.findOne({
+			_id: req.params.opinionId,
+			surveyId: survey._id,
+		});
+		if (!opinion) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Commentaire introuvable.',
+			});
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({
+				code: SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
+				message: "Vous devez etre owner ou admin de l'organisation pour moderer ce commentaire.",
+			});
+		}
+
+		const restoration = await restoreOpinionComment({
+			opinion,
+			actorUserId: req.userId,
+		});
+
+		const io = req.app.get('io');
+		const visibleReason = String(getOpinionVisibleReason(opinion) || '').trim();
+		if (visibleReason) {
+			io?.to(`flash-multiple-${survey._id}`).emit('flash:comment-restored', {
+				_id: String(opinion._id),
+				answer: opinion.answer,
+				reason: visibleReason,
+				surveyId: String(opinion.surveyId),
+				type: 'multiple',
+				userPseudo: getOpinionDisplayPseudo(opinion, survey._id),
+				createdAt: opinion.createdAt,
+				likeCount: Number(opinion.likes?.length || 0),
+				dislikeCount: Number(opinion.dislikes?.length || 0),
+				userLiked: false,
+				userDisliked: false,
+			});
+		}
+
+		return res.status(200).json({
+			ok: true,
+			surveyId: String(survey._id),
+			type: 'multiple',
+			opinionId: String(opinion._id),
+			restoredAt: restoration.restoredAt,
+		});
+	} catch (error) {
+		if (isSurveyCommentModerationError(error)) {
+			return res.status(error.status).json({
+				code: error.code,
+				message: error.message,
+			});
+		}
+		console.error('surveyFlash_2.restoreComment error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.deleteComment = async (req, res) => {
+	try {
+		const survey = await Survey_2.findById(req.params.id)
+			.select(
+				'explain userId organizationId isClosed options reponse_1 reponse_2 reponse_3 reponse_4 reponse_5 reponse_6',
+			)
+			.lean();
+		if (!survey) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Sondage introuvable',
+			});
+		}
+		if (survey.explain !== false) {
+			return res.status(400).json({
+				code: SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
+				message: "Ce sondage n'est pas un sondage Flash.",
+			});
+		}
+
+		const opinion = await Opinion2Flash.findOne({
+			_id: req.params.opinionId,
+			surveyId: survey._id,
+		});
+		if (!opinion) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Commentaire introuvable.',
+			});
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		validateOpinionCommentModerationTarget({
+			survey,
+			opinion,
+			actorUserId: req.userId,
+			canModerate: canManage,
+		});
+
+		const deletion = await applyOpinionCommentDeletion({
+			opinion,
+			actorUserId: req.userId,
+		});
+
+		const io = req.app.get('io');
+		io?.to(`flash-multiple-${survey._id}`).emit('flash:comment-deleted', {
+			surveyId: String(survey._id),
+			type: 'multiple',
+			opinionId: String(opinion._id),
+			deletedAt: deletion.deletedAt,
+		});
+
+		return res.status(200).json({
+			ok: true,
+			surveyId: String(survey._id),
+			type: 'multiple',
+			opinionId: String(opinion._id),
+			deletedAt: deletion.deletedAt,
+		});
+	} catch (error) {
+		if (isSurveyCommentModerationError(error)) {
+			return res.status(error.status).json({
+				code: error.code,
+				message: error.message,
+			});
+		}
+		console.error('surveyFlash_2.deleteComment error:', error);
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };

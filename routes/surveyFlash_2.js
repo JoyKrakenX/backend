@@ -20,6 +20,18 @@ router.post(
 	surveyFlash2Ctrl.reviewQuarantineOpinion,
 );
 router.post(
+	'/:id/comments/:opinionId/delete',
+	sensitiveRateLimit,
+	auth,
+	surveyFlash2Ctrl.deleteComment,
+);
+router.post(
+	'/:id/comments/:opinionId/restore',
+	sensitiveRateLimit,
+	auth,
+	surveyFlash2Ctrl.restoreComment,
+);
+router.post(
 	'/:id/answer',
 	sensitiveRateLimit,
 	auth,

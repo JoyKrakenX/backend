@@ -11,11 +11,41 @@ const {
 	canManageSurveyByOrganization,
 } = require('../services/surveyAuthorizationService');
 const { getRedisClient } = require('../services/redisService');
+const { getRedisPresenceSnapshot } = require('../services/chatPresenceService');
+const {
+	CHAT_ERROR_CODES,
+	CHAT_RESTRICTION_STATES,
+	buildSurveyModeratorsRoomName,
+	buildSurveyUserRoomName,
+	getProtectedTargetUserIds,
+	getRestrictionsMapForUsers,
+	getViewerRestriction,
+	isChatModerationError,
+	assertViewerCanInteract,
+	applyMuteFromMessage,
+	applyBanFromMessage,
+	createChatModerationError,
+} = require('../services/chatModerationService');
+const { moderateChatMessage } = require('../services/contentModerationService');
 
 const getSurveyModelName = (type) =>
 	type === 'multiple' ? 'Survey_2' : 'Survey';
 
 const getSurveyModel = (type) => (type === 'multiple' ? Survey_2 : Survey);
+
+const handleChatErrorResponse = (res, error) => {
+	if (isChatModerationError(error)) {
+		return res.status(error.status).json({
+			code: error.code,
+			message: error.message,
+			moderation: error.moderation || undefined,
+		});
+	}
+
+	return res
+		.status(500)
+		.json({ message: 'Erreur serveur', error: error.message });
+};
 
 const getOnlineUsersCount = async ({ io, survey, surveyId }) => {
 	if (!io) return 0;
@@ -25,8 +55,14 @@ const getOnlineUsersCount = async ({ io, survey, surveyId }) => {
 	const redis = await getRedisClient();
 
 	if (redis && organizationId) {
-		const key = `presence:org:${String(organizationId)}:survey:${String(surveyId)}:online_users`;
-		return Number((await redis.scard(key)) || 0);
+		const snapshot = await getRedisPresenceSnapshot(redis, {
+			organizationId,
+			surveyId,
+			roomName,
+		});
+		if (snapshot) {
+			return Number(snapshot.onlineCount || 0);
+		}
 	}
 
 	const presenceStore = io.chatPresence;
@@ -125,12 +161,60 @@ exports.getChatMessages = async (req, res, next) => {
 
 		// Compter le total des messages
 		const totalMessages = await ChatMessage.countDocuments(messageFilter);
+		const organizationId = await resolveSurveyOrganizationId(survey);
 		const canModerateChat = await canManageSurveyByOrganization(
 			survey,
 			req.userId
 		);
+		const viewerRestriction = await getViewerRestriction({
+			surveyId: surveyObjectId,
+			surveyModel: surveyModelName,
+			userId: req.userId,
+		});
+		const messageUserIds = canModerateChat ?
+			reversedMessages
+				.map((msg) => msg.userId?._id || msg.userId || null)
+				.filter(Boolean)
+		:	[];
+		const [protectedTargetUserIds, restrictionMap] = await Promise.all(
+			canModerateChat ?
+				[
+					getProtectedTargetUserIds({ survey, organizationId }),
+					getRestrictionsMapForUsers({
+						surveyId: surveyObjectId,
+						surveyModel: surveyModelName,
+						userIds: messageUserIds,
+					}),
+				]
+			:	[new Set(), new Map()]
+		);
+
+		const restrictionEntries =
+			canModerateChat ?
+				Object.fromEntries(restrictionMap.entries())
+			:	undefined;
+		const protectedIdsPayload =
+			canModerateChat ? Array.from(protectedTargetUserIds) : undefined;
+
+		const enrichedMessagesWithModeration = enrichedMessages.map((msg) => {
+			if (!canModerateChat) return msg;
+
+			const targetUserId = String(msg.user?.id || msg.userId || '');
+			return {
+				...msg,
+				moderation: {
+					isProtectedTarget:
+						Boolean(targetUserId) && protectedTargetUserIds.has(targetUserId),
+					restriction:
+						restrictionMap.get(targetUserId) || {
+							state: CHAT_RESTRICTION_STATES.NONE,
+							muteUntil: null,
+						},
+				},
+			};
+		});
 		res.status(200).json({
-			messages: enrichedMessages,
+			messages: enrichedMessagesWithModeration,
 			surveyClosed: Boolean(survey.isClosed),
 			message:
 				survey.isClosed ?
@@ -148,13 +232,21 @@ exports.getChatMessages = async (req, res, next) => {
 				isClosed: survey.isClosed,
 				type: type,
 			},
+			viewerRestriction,
 			capabilities: {
 				canModerateChat: Boolean(canModerateChat),
+				protectedTargetUserIds: protectedIdsPayload,
 			},
+			moderationContext:
+				canModerateChat ?
+					{
+						targetRestrictions: restrictionEntries,
+					}
+				:	undefined,
 		});
 	} catch (error) {
 		console.error('Erreur getChatMessages:', error);
-		res.status(500).json({ message: 'Erreur serveur', error: error.message });
+		return handleChatErrorResponse(res, error);
 	}
 };
 
@@ -162,7 +254,7 @@ exports.getChatMessages = async (req, res, next) => {
 exports.sendMessage = async (req, res, next) => {
 	try {
 		const { surveyId } = req.params;
-		const { message, type, replyTo } = req.body;
+		const { message, type, replyTo, locale } = req.body;
 
 		if (!surveyId || !mongoose.Types.ObjectId.isValid(surveyId)) {
 			return res.status(400).json({ message: 'surveyId manquant ou invalide' });
@@ -211,6 +303,34 @@ exports.sendMessage = async (req, res, next) => {
 				code: entitlement.code,
 				message: entitlement.message,
 			});
+		}
+		await assertViewerCanInteract({
+			surveyId: surveyObjectId,
+			surveyModel: surveyModelName,
+			userId: req.userId,
+		});
+
+		const moderation = await moderateChatMessage({
+			text: message.trim(),
+			locale,
+			surveyId: surveyObjectId,
+			surveyType: type === 'multiple' ? 'multiple' : 'binary',
+			surveyModel: surveyModelName,
+			userId: req.userId,
+			userPseudoSnapshot: req.userPseudo,
+		});
+		if (!moderation.ok) {
+			const error = createChatModerationError(
+				403,
+				CHAT_ERROR_CODES.AUTO_MODERATED,
+				'Votre message a ete bloque automatiquement car il contient un contenu a risque.',
+			);
+			error.moderation = {
+				source: moderation.decision.source,
+				reasonCodes: moderation.decision.reasonCodes,
+				state: moderation.decision.appliedVerdict,
+			};
+			throw error;
 		}
 
 		let replyToInfo = null;
@@ -285,7 +405,101 @@ exports.sendMessage = async (req, res, next) => {
 		});
 	} catch (error) {
 		console.error('Erreur sendMessage:', error);
-		res.status(500).json({ message: 'Erreur serveur', error: error.message });
+		return handleChatErrorResponse(res, error);
+	}
+};
+
+exports.muteMessageAuthor = async (req, res) => {
+	try {
+		const { messageId } = req.params;
+		const result = await applyMuteFromMessage({
+			messageId,
+			actorUserId: req.userId,
+		});
+		const {
+			context,
+			restriction,
+			targetUserId,
+			targetUserPseudo,
+		} = result;
+
+		const io = req.app.get('io');
+		if (io) {
+			const payload = {
+				messageId: String(context.chatMessage._id),
+				surveyId: String(context.chatMessage.surveyId),
+				targetUserId,
+				targetUserPseudo,
+				restriction,
+			};
+			io.to(buildSurveyUserRoomName(context.chatMessage.surveyId, targetUserId)).emit(
+				'chatRestrictionUpdated',
+				payload,
+			);
+			io.to(buildSurveyModeratorsRoomName(context.chatMessage.surveyId)).emit(
+				'chatRestrictionUpdated',
+				payload,
+			);
+		}
+
+		return res.status(200).json({
+			message: 'Utilisateur mute pour 10 minutes.',
+			messageId: String(context.chatMessage._id),
+			surveyId: String(context.chatMessage.surveyId),
+			targetUserId,
+			targetUserPseudo,
+			restriction,
+		});
+	} catch (error) {
+		console.error('Erreur muteMessageAuthor:', error);
+		return handleChatErrorResponse(res, error);
+	}
+};
+
+exports.banMessageAuthor = async (req, res) => {
+	try {
+		const { messageId } = req.params;
+		const result = await applyBanFromMessage({
+			messageId,
+			actorUserId: req.userId,
+		});
+		const {
+			context,
+			restriction,
+			targetUserId,
+			targetUserPseudo,
+		} = result;
+
+		const io = req.app.get('io');
+		if (io) {
+			const payload = {
+				messageId: String(context.chatMessage._id),
+				surveyId: String(context.chatMessage.surveyId),
+				targetUserId,
+				targetUserPseudo,
+				restriction,
+			};
+			io.to(buildSurveyUserRoomName(context.chatMessage.surveyId, targetUserId)).emit(
+				'chatRestrictionUpdated',
+				payload,
+			);
+			io.to(buildSurveyModeratorsRoomName(context.chatMessage.surveyId)).emit(
+				'chatRestrictionUpdated',
+				payload,
+			);
+		}
+
+		return res.status(200).json({
+			message: 'Utilisateur banni du chat.',
+			messageId: String(context.chatMessage._id),
+			surveyId: String(context.chatMessage.surveyId),
+			targetUserId,
+			targetUserPseudo,
+			restriction,
+		});
+	} catch (error) {
+		console.error('Erreur banMessageAuthor:', error);
+		return handleChatErrorResponse(res, error);
 	}
 };
 
@@ -389,7 +603,7 @@ exports.toggleMessageLike = async (req, res, next) => {
 			chatMessage.surveyModel === 'Survey_2' ? Survey_2 : Survey;
 		const survey = await surveyModel
 			.findById(chatMessage.surveyId)
-			.select('isClosed')
+			.select('isClosed organizationId userId')
 			.lean();
 		if (!survey) {
 			return res.status(404).json({ message: 'Sondage introuvable' });
@@ -413,6 +627,11 @@ exports.toggleMessageLike = async (req, res, next) => {
 				message: entitlement.message,
 			});
 		}
+		await assertViewerCanInteract({
+			surveyId: chatMessage.surveyId,
+			surveyModel: chatMessage.surveyModel,
+			userId: req.userId,
+		});
 
 		const userId = req.userId.toString();
 		const liked = chatMessage.likes.some((id) => id.toString() === userId);
@@ -485,7 +704,7 @@ exports.toggleMessageLike = async (req, res, next) => {
 		});
 	} catch (error) {
 		console.error('Erreur toggleMessageLike:', error);
-		res.status(500).json({ message: 'Erreur serveur', error: error.message });
+		return handleChatErrorResponse(res, error);
 	}
 };
 

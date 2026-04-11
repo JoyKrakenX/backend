@@ -13,7 +13,27 @@ const {
 } = require('../services/billing/constants');
 const { resolveSurveyOrganizationId } = require('../services/surveyOrganizationService');
 const { getRedisClient } = require('../services/redisService');
+const {
+	SOCKET_HEARTBEAT_INTERVAL_MS,
+	getRedisPresenceSnapshot,
+	removeSocketPresence,
+	touchSocketPresence,
+} = require('../services/chatPresenceService');
 const { recordChatPeak } = require('../services/billing/usageService');
+const {
+	CHAT_ERROR_CODES,
+	CHAT_RESTRICTION_STATES,
+	buildSurveyModeratorsRoomName,
+	buildSurveyUserRoomName,
+	getViewerRestriction,
+	isChatModerationError,
+	assertViewerCanInteract,
+	createChatModerationError,
+} = require('../services/chatModerationService');
+const { moderateChatMessage } = require('../services/contentModerationService');
+const {
+	canManageSurveyByOrganization,
+} = require('../services/surveyAuthorizationService');
 
 const buildRoomName = (surveyId) => `survey-${String(surveyId)}`;
 
@@ -59,13 +79,41 @@ const resolveSocketUser = async (socket) => {
 	}
 };
 
-const buildPresenceKeys = (organizationId, surveyId) => {
-	const base = `presence:org:${String(organizationId)}:survey:${String(surveyId)}`;
-	return {
-		counts: `${base}:user_socket_count`,
-		online: `${base}:online_users`,
-		meta: `${base}:user_meta`,
+const emitSocketChatError = async (
+	socket,
+	error,
+	{ surveyId = null, surveyModel = null, userId = null } = {},
+) => {
+	if (!isChatModerationError(error)) {
+		socket.emit('error', {
+			message: error?.message || 'Erreur chat.',
+		});
+		return;
+	}
+
+	const payload = {
+		code: error.code,
+		message: error.message,
 	};
+	if (error?.moderation) {
+		payload.moderation = error.moderation;
+	}
+
+	if (
+		userId &&
+		surveyId &&
+		surveyModel &&
+		(error.code === CHAT_ERROR_CODES.MUTED ||
+			error.code === CHAT_ERROR_CODES.BANNED)
+	) {
+		payload.restriction = await getViewerRestriction({
+			surveyId,
+			surveyModel,
+			userId,
+		});
+	}
+
+	socket.emit('error', payload);
 };
 
 module.exports = (io) => {
@@ -110,123 +158,56 @@ module.exports = (io) => {
 		};
 	};
 
-	const incrementRedisPresence = async ({
-		organizationId,
-		surveyId,
-		userId,
-		pseudo,
-		picture,
-	}) => {
-		const redis = await getRedisClient();
-		if (!redis) return null;
-		const keys = buildPresenceKeys(organizationId, surveyId);
-		const ttlSeconds = 60 * 60 * 24 * 2;
-
-		const [[, userSocketCount]] = await redis
-			.multi()
-			.hincrby(keys.counts, String(userId), 1)
-			.expire(keys.counts, ttlSeconds)
-			.expire(keys.online, ttlSeconds)
-			.expire(keys.meta, ttlSeconds)
-			.exec();
-
-		if (Number(userSocketCount || 0) <= 1) {
-			await redis.multi().sadd(keys.online, String(userId)).exec();
-		}
-
-		await redis.hset(
-			keys.meta,
-			String(userId),
-			JSON.stringify({
-				userId: String(userId),
-				pseudo: String(pseudo || 'Utilisateur'),
-				picture: picture || null,
-			}),
-		);
-		const concurrentCount = Number((await redis.scard(keys.online)) || 0);
-		return {
-			usedRedis: true,
-			concurrentCount,
-			userSocketCount: Number(userSocketCount || 0),
-		};
-	};
-
-	const decrementRedisPresence = async ({ organizationId, surveyId, userId }) => {
-		const redis = await getRedisClient();
-		if (!redis) return null;
-		const keys = buildPresenceKeys(organizationId, surveyId);
-
-		const decrementedRaw = await redis.hincrby(keys.counts, String(userId), -1);
-		const userSocketCount = Math.max(0, Number(decrementedRaw || 0));
-		if (userSocketCount <= 0) {
-			await redis
-				.multi()
-				.hdel(keys.counts, String(userId))
-				.srem(keys.online, String(userId))
-				.hdel(keys.meta, String(userId))
-				.exec();
-		}
-		const concurrentCount = Number((await redis.scard(keys.online)) || 0);
-		return {
-			usedRedis: true,
-			concurrentCount,
-			userSocketCount,
-		};
-	};
-
-	const buildRedisPresencePayload = async ({ roomName, organizationId, surveyId }) => {
-		if (!organizationId || !surveyId) return null;
-		const redis = await getRedisClient();
-		if (!redis) return null;
-		const keys = buildPresenceKeys(organizationId, surveyId);
-		const userIds = await redis.smembers(keys.online);
-		if (!userIds.length) {
-			return {
-				roomId: roomName,
-				onlineCount: 0,
-				users: [],
-			};
-		}
-		const serializedUsers = await redis.hmget(keys.meta, ...userIds);
-		const users = userIds.map((userId, index) => {
-			const raw = serializedUsers[index];
-			if (!raw) {
-				return {
-					userId: String(userId),
-					pseudo: 'Utilisateur',
-					picture: null,
-				};
-			}
-			try {
-				const parsed = JSON.parse(raw);
-				return {
-					userId: String(parsed?.userId || userId),
-					pseudo: String(parsed?.pseudo || 'Utilisateur'),
-					picture: parsed?.picture || null,
-				};
-			} catch (_error) {
-				return {
-					userId: String(userId),
-					pseudo: 'Utilisateur',
-					picture: null,
-				};
-			}
-		});
-
-		return {
-			roomId: roomName,
-			onlineCount: users.length,
-			users,
-		};
-	};
-
 	const emitRoomPresence = async ({ roomName, organizationId, surveyId }) => {
-		const redisPayload = await buildRedisPresencePayload({
+		const redis = await getRedisClient();
+		const redisPayload = await getRedisPresenceSnapshot(redis, {
 			roomName,
 			organizationId,
 			surveyId,
 		});
 		io.to(roomName).emit('onlineUsersState', redisPayload || buildLocalPresencePayload(roomName));
+	};
+
+	const stopSocketPresenceHeartbeat = (socket) => {
+		if (socket?.data?.presenceHeartbeat) {
+			clearInterval(socket.data.presenceHeartbeat);
+			socket.data.presenceHeartbeat = null;
+		}
+	};
+
+	const startSocketPresenceHeartbeat = (socket) => {
+		stopSocketPresenceHeartbeat(socket);
+		if (
+			!socket?.data?.organizationId ||
+			!socket?.data?.surveyId ||
+			!socket?.data?.roomName ||
+			!socket?.data?.userId
+		) {
+			return;
+		}
+
+		const heartbeat = setInterval(async () => {
+			try {
+				const redis = await getRedisClient();
+				if (!redis) return;
+				await touchSocketPresence(redis, {
+					organizationId: socket.data.organizationId,
+					surveyId: socket.data.surveyId,
+					roomName: socket.data.roomName,
+					socketId: socket.id,
+					userId: socket.data.userId,
+					pseudo: socket.data.pseudo,
+					picture: socket.data.picture || null,
+				});
+			} catch (error) {
+				console.error('chat.presenceHeartbeat error:', error?.message || error);
+			}
+		}, SOCKET_HEARTBEAT_INTERVAL_MS);
+
+		if (typeof heartbeat.unref === 'function') {
+			heartbeat.unref();
+		}
+		socket.data.presenceHeartbeat = heartbeat;
 	};
 
 	const clearSocketPresence = async (socket) => {
@@ -238,9 +219,35 @@ module.exports = (io) => {
 		if (!roomName || !userId) {
 			return null;
 		}
+		stopSocketPresenceHeartbeat(socket);
 
 		const roomUsers = roomPresence.get(roomName);
 		if (!roomUsers) {
+			if (organizationId && surveyId) {
+				const redis = await getRedisClient();
+				await removeSocketPresence(redis, {
+					organizationId,
+					surveyId,
+					socketId: socket.id,
+				});
+				const snapshot = await getRedisPresenceSnapshot(redis, {
+					organizationId,
+					surveyId,
+					roomName,
+				});
+				const stillOnline =
+					snapshot?.users?.some((entry) => String(entry?.userId || '') === String(userId)) ||
+					false;
+				return {
+					roomName,
+					userId,
+					pseudo: socket.data?.pseudo || 'Utilisateur',
+					isLastSocketForUser: !stillOnline,
+					concurrentCount: Number(snapshot?.onlineCount || 0),
+					organizationId,
+					surveyId,
+				};
+			}
 			return null;
 		}
 
@@ -257,23 +264,26 @@ module.exports = (io) => {
 			roomPresence.delete(roomName);
 		}
 
-		const redisUpdate =
-			organizationId && surveyId
-				? await decrementRedisPresence({
-						organizationId,
-						surveyId,
-						userId,
-				  	})
-				: null;
-
-		const concurrentCount =
-			redisUpdate?.usedRedis
-				? Number(redisUpdate.concurrentCount || 0)
-				: roomUsers?.size || 0;
-		const isLastSocketForUser =
-			redisUpdate?.usedRedis
-				? Number(redisUpdate.userSocketCount || 0) <= 0
-				: userEntry.sockets.size === 0;
+		let concurrentCount = roomUsers?.size || 0;
+		let isLastSocketForUser = userEntry.sockets.size === 0;
+		if (organizationId && surveyId) {
+			const redis = await getRedisClient();
+			await removeSocketPresence(redis, {
+				organizationId,
+				surveyId,
+				socketId: socket.id,
+			});
+			const snapshot = await getRedisPresenceSnapshot(redis, {
+				organizationId,
+				surveyId,
+				roomName,
+			});
+			concurrentCount = Number(snapshot?.onlineCount || 0);
+			isLastSocketForUser =
+				!snapshot?.users?.some(
+					(entry) => String(entry?.userId || '') === String(userId),
+				);
+		}
 
 		return {
 			roomName,
@@ -312,6 +322,10 @@ module.exports = (io) => {
 				}
 
 				const surveyOrganizationId = await resolveSurveyOrganizationId(survey);
+				const canModerateChat = await canManageSurveyByOrganization(
+					survey,
+					authUser.id,
+				);
 				const entitlement = await authorizeAction({
 					action: ENTITLEMENT_ACTIONS.JOIN_CHAT,
 					organizationId: surveyOrganizationId,
@@ -326,11 +340,22 @@ module.exports = (io) => {
 				}
 
 				const roomName = buildRoomName(surveyId);
+				const userRoomName = buildSurveyUserRoomName(surveyId, authUser.id);
+				const moderatorRoomName =
+					canModerateChat ? buildSurveyModeratorsRoomName(surveyId) : null;
 
 				if (socket.data?.roomName && socket.data.roomName !== roomName) {
 					const previousRoomName = socket.data.roomName;
+					const previousUserRoomName = socket.data.userRoomName;
+					const previousModeratorRoomName = socket.data.moderatorRoomName;
 					const previousRemoval = await clearSocketPresence(socket);
 					socket.leave(previousRoomName);
+					if (previousUserRoomName) {
+						socket.leave(previousUserRoomName);
+					}
+					if (previousModeratorRoomName) {
+						socket.leave(previousModeratorRoomName);
+					}
 
 					if (previousRemoval?.isLastSocketForUser) {
 						socket.to(previousRoomName).emit('userLeft', {
@@ -348,17 +373,27 @@ module.exports = (io) => {
 				}
 
 				socket.join(roomName);
+				socket.join(userRoomName);
+				if (moderatorRoomName) {
+					socket.join(moderatorRoomName);
+				}
 				socket.data.roomName = roomName;
+				socket.data.userRoomName = userRoomName;
+				socket.data.moderatorRoomName = moderatorRoomName;
 				socket.data.surveyId = String(surveyId);
 				socket.data.surveyType = type === 'multiple' ? 'multiple' : 'binary';
 				socket.data.organizationId = surveyOrganizationId;
 				socket.data.userId = String(authUser.id);
 				socket.data.pseudo = authUser.pseudo;
 				socket.data.picture = picture || authUser.picture || null;
+				socket.data.canModerateChat = canModerateChat;
 
 				const roomUsers = ensureRoomPresence(roomName);
 				const normalizedUserId = String(authUser.id);
 				const existingEntry = roomUsers.get(normalizedUserId);
+				const alreadyTrackedSocket = Boolean(
+					existingEntry?.sockets?.has(socket.id),
+				);
 				const userEntry =
 					existingEntry || {
 						userId: normalizedUserId,
@@ -369,29 +404,46 @@ module.exports = (io) => {
 
 				userEntry.pseudo = authUser.pseudo || userEntry.pseudo;
 				userEntry.picture = picture || authUser.picture || userEntry.picture || null;
-				userEntry.sockets.add(socket.id);
+				if (!alreadyTrackedSocket) {
+					userEntry.sockets.add(socket.id);
+				}
 				roomUsers.set(normalizedUserId, userEntry);
 
-				const redisUpdate =
-					surveyOrganizationId && surveyId
-						? await incrementRedisPresence({
-								organizationId: surveyOrganizationId,
-								surveyId,
-								userId: normalizedUserId,
-								pseudo: authUser.pseudo,
-								picture: userEntry.picture,
-						  	})
-						: null;
+				let beforeUserOnline = false;
+				let concurrentCount = roomUsers.size;
+				if (surveyOrganizationId && surveyId) {
+					const redis = await getRedisClient();
+					const beforeSnapshot = await getRedisPresenceSnapshot(redis, {
+						organizationId: surveyOrganizationId,
+						surveyId,
+						roomName,
+					});
+					beforeUserOnline =
+						beforeSnapshot?.users?.some(
+							(entry) =>
+								String(entry?.userId || '') === normalizedUserId,
+						) || false;
+
+					await touchSocketPresence(redis, {
+						organizationId: surveyOrganizationId,
+						surveyId,
+						roomName,
+						socketId: socket.id,
+						userId: normalizedUserId,
+						pseudo: authUser.pseudo,
+						picture: userEntry.picture,
+					});
+					const afterSnapshot = await getRedisPresenceSnapshot(redis, {
+						organizationId: surveyOrganizationId,
+						surveyId,
+						roomName,
+					});
+					concurrentCount = Number(afterSnapshot?.onlineCount || roomUsers.size);
+				}
+				startSocketPresenceHeartbeat(socket);
 
 				const isFirstPresenceForUser =
-					redisUpdate?.usedRedis
-						? Number(redisUpdate.userSocketCount || 0) === 1
-						: !existingEntry;
-
-				const concurrentCount =
-					redisUpdate?.usedRedis
-						? Number(redisUpdate.concurrentCount || 0)
-						: roomUsers.size;
+					!alreadyTrackedSocket && !existingEntry && !beforeUserOnline;
 
 				const liveLimit = Number(entitlement?.effectiveQuotas?.chatConcurrent);
 				if (
@@ -445,9 +497,25 @@ module.exports = (io) => {
 					organizationId: surveyOrganizationId,
 					surveyId,
 				});
+
+				const surveyModelName =
+					type === 'multiple' ? 'Survey_2' : 'Survey';
+				const viewerRestriction = await getViewerRestriction({
+					surveyId,
+					surveyModel: surveyModelName,
+					userId: authUser.id,
+				});
+				if (viewerRestriction.state !== CHAT_RESTRICTION_STATES.NONE) {
+					socket.emit('chatRestrictionUpdated', {
+						surveyId: String(surveyId),
+						targetUserId: String(authUser.id),
+						targetUserPseudo: authUser.pseudo || 'Utilisateur',
+						restriction: viewerRestriction,
+					});
+				}
 			} catch (error) {
 				console.error('chat.joinChatRoom error:', error);
-				socket.emit('error', { message: 'Erreur lors de la connexion au chat.' });
+				await emitSocketChatError(socket, error);
 			}
 		});
 
@@ -465,6 +533,7 @@ module.exports = (io) => {
 				const type = socket.data?.surveyType || data.type;
 				const message = String(data.message || '').trim();
 				const replyTo = data.replyTo || null;
+				const locale = data.locale || null;
 
 				if (!message) {
 					return socket.emit('error', {
@@ -502,6 +571,34 @@ module.exports = (io) => {
 						code: entitlement.code,
 						message: entitlement.message,
 					});
+				}
+				await assertViewerCanInteract({
+					surveyId,
+					surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
+					userId: authUser.id,
+				});
+
+				const moderation = await moderateChatMessage({
+					text: message,
+					locale,
+					surveyId,
+					surveyType: type === 'multiple' ? 'multiple' : 'binary',
+					surveyModel: type === 'multiple' ? 'Survey_2' : 'Survey',
+					userId: authUser.id,
+					userPseudoSnapshot: authUser.pseudo,
+				});
+				if (!moderation.ok) {
+					const error = createChatModerationError(
+						403,
+						CHAT_ERROR_CODES.AUTO_MODERATED,
+						'Votre message a ete bloque automatiquement car il contient un contenu a risque.',
+					);
+					error.moderation = {
+						source: moderation.decision.source,
+						reasonCodes: moderation.decision.reasonCodes,
+						state: moderation.decision.appliedVerdict,
+					};
+					throw error;
 				}
 
 				let replyToInfo = null;
@@ -565,7 +662,14 @@ module.exports = (io) => {
 				io.to(buildRoomName(surveyId)).emit('newMessage', formattedMessage);
 			} catch (error) {
 				console.error('chat.sendMessage error:', error);
-				socket.emit('error', { message: "Erreur lors de l'envoi du message" });
+				await emitSocketChatError(socket, error, {
+					surveyId: socket.data?.surveyId || data?.surveyId || null,
+					surveyModel:
+						(socket.data?.surveyType || data?.type) === 'multiple' ?
+							'Survey_2'
+						:	'Survey',
+					userId: socket.data?.authUser?.id || null,
+				});
 			}
 		});
 
@@ -608,6 +712,11 @@ module.exports = (io) => {
 					});
 					return;
 				}
+				await assertViewerCanInteract({
+					surveyId: chatMessage.surveyId,
+					surveyModel: chatMessage.surveyModel,
+					userId: authUser.id,
+				});
 
 				const userId = String(authUser.id);
 				const liked = chatMessage.likes.some((id) => String(id) === userId);
@@ -652,6 +761,12 @@ module.exports = (io) => {
 				});
 			} catch (error) {
 				console.error('chat.messageReaction error:', error);
+				await emitSocketChatError(socket, error, {
+					surveyId: socket.data?.surveyId || null,
+					surveyModel:
+						socket.data?.surveyType === 'multiple' ? 'Survey_2' : 'Survey',
+					userId: socket.data?.authUser?.id || null,
+				});
 			}
 		});
 
@@ -660,6 +775,12 @@ module.exports = (io) => {
 			if (!roomName) return;
 
 			socket.leave(roomName);
+			if (socket.data?.userRoomName) {
+				socket.leave(socket.data.userRoomName);
+			}
+			if (socket.data?.moderatorRoomName) {
+				socket.leave(socket.data.moderatorRoomName);
+			}
 			const removal = await clearSocketPresence(socket);
 
 			if (removal?.isLastSocketForUser) {
@@ -678,12 +799,15 @@ module.exports = (io) => {
 			});
 
 			socket.data.roomName = null;
+			socket.data.userRoomName = null;
+			socket.data.moderatorRoomName = null;
 			socket.data.userId = null;
 			socket.data.pseudo = null;
 			socket.data.picture = null;
 			socket.data.organizationId = null;
 			socket.data.surveyId = null;
 			socket.data.surveyType = null;
+			socket.data.canModerateChat = false;
 		});
 
 		socket.on('disconnect', async () => {

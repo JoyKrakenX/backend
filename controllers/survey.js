@@ -9,8 +9,6 @@ const User = require('../models/User');
 const { normalizeQuestion } = require('../utils/questionNormalizer');
 const {
 	buildAdminProfilesByUserId,
-	anonymizeOpinionsForSurvey,
-	buildSurveyAlias,
 } = require('../utils/commentAnonymizer');
 const {
 	broadcastSurveyNewPush,
@@ -35,6 +33,20 @@ const {
 	buildStatusFilter,
 	getIntegritySnapshotForSurvey,
 } = require('../services/fraud/opinionFilterService');
+const {
+	SURVEY_COMMENT_ERROR_CODES,
+	isSurveyCommentModerationError,
+	getOpinionDisplayPseudo,
+	getOpinionVisibleReason,
+	prepareOpinionsForSurveyView,
+	prepareOpinionQueueItems,
+	validateOpinionCommentModerationTarget,
+	applyOpinionCommentDeletion,
+	restoreOpinionComment,
+	buildAutoModerationCommentFields,
+	buildCommentSubmissionModerationPayload,
+} = require('../services/surveyCommentModerationService');
+const { moderateSurveyComment } = require('../services/contentModerationService');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -81,17 +93,22 @@ const emitClassicBinaryCounts = (io, survey, counts, isClosed) => {
 	});
 };
 
-const emitClassicBinaryOpinion = (io, survey, opinion) => {
-	const reason = String(opinion?.reason || '').trim();
+const emitClassicBinaryOpinion = (
+	io,
+	survey,
+	opinion,
+	eventName = 'classic:new-opinion',
+) => {
+	const reason = String(getOpinionVisibleReason(opinion) || '').trim();
 	if (!io || !survey || !opinion || !reason) return;
 
-	io.to(getClassicRoom(survey._id)).emit('classic:new-opinion', {
+	io.to(getClassicRoom(survey._id)).emit(eventName, {
 		_id: String(opinion._id),
 		answer: Boolean(opinion.answer),
 		reason,
 		surveyId: String(opinion.surveyId),
 		type: 'binary',
-		userPseudo: buildSurveyAlias(survey._id, opinion.userId),
+		userPseudo: getOpinionDisplayPseudo(opinion, survey._id),
 		createdAt: opinion.createdAt,
 		likeCount: 0,
 		dislikeCount: 0,
@@ -325,13 +342,14 @@ exports.submitOpinion = async (req, res) => {
 		if (!req.body.reason || req.body.reason.trim() === '') {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
+		const normalizedReason = String(req.body.reason || '').trim();
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
 			userId: req.userId,
 			surveyId: survey._id,
 			surveyType: 'binary',
-			reason: req.body.reason,
+			reason: normalizedReason,
 			identity: req.riskIdentity || {},
 			turnstileToken: req.body.turnstileToken || null,
 			challengeToken:
@@ -363,9 +381,22 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
+		const commentModerationResult =
+			normalizedReason ?
+				await moderateSurveyComment({
+					text: normalizedReason,
+					locale: req.body.locale,
+					surveyId: survey._id,
+					surveyType: 'binary',
+					surveyModel: 'Opinion',
+					userId: req.userId,
+					userPseudoSnapshot: req.userPseudo,
+				})
+			:	null;
+
 		const opinion = new Opinion({
 			answer: req.body.answer,
-			reason: req.body.reason,
+			reason: normalizedReason,
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 			userPseudo: req.userPseudo,
@@ -373,6 +404,12 @@ exports.submitOpinion = async (req, res) => {
 				result: fraudDecision,
 				identity: req.riskIdentity || {},
 			}),
+			...(commentModerationResult ?
+				buildAutoModerationCommentFields({
+					decision: commentModerationResult.decision,
+					logEntry: commentModerationResult.logEntry,
+				})
+			:	{}),
 		});
 
 		await opinion.save();
@@ -413,6 +450,7 @@ exports.submitOpinion = async (req, res) => {
 			canViewResults: true,
 			voteStatus: opinion.fraudStatus,
 			fraudReview: opinion.fraudStatus === 'quarantined',
+			commentModeration: buildCommentSubmissionModerationPayload(opinion),
 		});
 	} catch (err) {
 		console.error('ERREUR dans submitOpinion:', err);
@@ -518,9 +556,10 @@ exports.getDetailedStats = async (req, res) => {
 				userDisliked,
 			};
 		});
-		const enriched = anonymizeOpinionsForSurvey(enrichedRaw, surveyId, {
+		const enriched = prepareOpinionsForSurveyView(enrichedRaw, surveyId, {
 			includeAdminProfile: allowAdminFilters,
 			includeVoterKey: allowAdminFilters,
+			includeExportPseudo: allowAdminFilters,
 			adminProfilesByUserId,
 			requesterUserId: req.userId,
 		});
@@ -694,22 +733,29 @@ exports.getQuarantineQueue = async (req, res) => {
 
 		const OpinionModel = getBinaryOpinionModel(survey);
 		const statusFilterRaw = String(req.query?.status || '').trim().toLowerCase();
-		const allowedStatuses = ['quarantined', 'confirmed_fraud', 'all'];
+		const allowedStatuses = ['quarantined', 'confirmed_fraud', 'auto_moderated', 'all'];
 		const selectedStatus = allowedStatuses.includes(statusFilterRaw) ?
 				statusFilterRaw
 			:	'quarantined';
-		const queueStatusFilter =
+		const queueQuery =
 			selectedStatus === 'all' ?
-				{ $in: ['quarantined', 'confirmed_fraud'] }
-			:	selectedStatus;
+				{
+					$or: [
+						{ fraudStatus: { $in: ['quarantined', 'confirmed_fraud'] } },
+						{ commentDeletedAt: { $ne: null }, commentDeletedSource: 'auto' },
+					],
+				}
+			: selectedStatus === 'auto_moderated' ?
+				{ commentDeletedAt: { $ne: null }, commentDeletedSource: 'auto' }
+			:	{ fraudStatus: selectedStatus };
 
 		const [items, total] = await Promise.all([
 			OpinionModel.find({
 				surveyId: survey._id,
-				fraudStatus: queueStatusFilter,
+				...queueQuery,
 			})
 				.select(
-					'_id answer reason userPseudo userId createdAt fraudStatus fraudScore fraudReasons challengeType',
+					'_id answer reason userPseudo userId createdAt fraudStatus fraudScore fraudReasons challengeType commentDeletedAt commentDeletedSource commentModerationLogId commentModerationReasonCodes commentModerationSource commentModerationLocale',
 				)
 				.sort({ createdAt: -1 })
 				.skip(skip)
@@ -717,9 +763,23 @@ exports.getQuarantineQueue = async (req, res) => {
 				.lean(),
 			OpinionModel.countDocuments({
 				surveyId: survey._id,
-				fraudStatus: queueStatusFilter,
+				...queueQuery,
 			}),
 		]);
+
+		const queueItems = prepareOpinionQueueItems(items, survey._id, {
+			includeExportPseudo: true,
+			includeModeratedReason:
+				selectedStatus === 'auto_moderated' || selectedStatus === 'all',
+		});
+		const normalizedQueueItems = queueItems.map((item) => ({
+			...item,
+			queueKind:
+				item?.commentModeration?.isDeleted &&
+				item?.commentModeration?.deletedSource === 'auto' ?
+					'auto_moderated'
+				:	'fraud',
+		}));
 
 		return res.status(200).json({
 			surveyId: String(survey._id),
@@ -727,10 +787,131 @@ exports.getQuarantineQueue = async (req, res) => {
 			total,
 			page,
 			limit,
-			items,
+			items: normalizedQueueItems,
 		});
 	} catch (error) {
 		console.error('survey.getQuarantineQueue error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.deleteComment = async (req, res) => {
+	try {
+		const survey = await Survey.findById(req.params.id)
+			.select('userId organizationId isClosed explain')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Sondage introuvable',
+			});
+		}
+
+		const opinion = await Opinion.findOne({
+			_id: req.params.opinionId,
+			surveyId: survey._id,
+		});
+		if (!opinion) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Commentaire introuvable.',
+			});
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		validateOpinionCommentModerationTarget({
+			survey,
+			opinion,
+			actorUserId: req.userId,
+			canModerate: canManage,
+		});
+
+		const deletion = await applyOpinionCommentDeletion({
+			opinion,
+			actorUserId: req.userId,
+		});
+
+		const io = req.app.get('io');
+		io?.to(getClassicRoom(survey._id)).emit('classic:comment-deleted', {
+			surveyId: String(survey._id),
+			type: 'binary',
+			opinionId: String(opinion._id),
+			deletedAt: deletion.deletedAt,
+		});
+
+		return res.status(200).json({
+			ok: true,
+			surveyId: String(survey._id),
+			type: 'binary',
+			opinionId: String(opinion._id),
+			deletedAt: deletion.deletedAt,
+		});
+	} catch (error) {
+		if (isSurveyCommentModerationError(error)) {
+			return res.status(error.status).json({
+				code: error.code,
+				message: error.message,
+			});
+		}
+		console.error('survey.deleteComment error:', error);
+		return res.status(500).json({ message: 'Erreur serveur' });
+	}
+};
+
+exports.restoreComment = async (req, res) => {
+	try {
+		const survey = await Survey.findById(req.params.id)
+			.select('userId organizationId')
+			.lean();
+		if (!survey) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Sondage introuvable',
+			});
+		}
+
+		const opinion = await Opinion.findOne({
+			_id: req.params.opinionId,
+			surveyId: survey._id,
+		});
+		if (!opinion) {
+			return res.status(404).json({
+				code: SURVEY_COMMENT_ERROR_CODES.COMMENT_NOT_FOUND,
+				message: 'Commentaire introuvable.',
+			});
+		}
+
+		const canManage = await canManageSurveyByOrganization(survey, req.userId);
+		if (!canManage) {
+			return res.status(403).json({
+				code: SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
+				message: "Vous devez etre owner ou admin de l'organisation pour moderer ce commentaire.",
+			});
+		}
+
+		const restoration = await restoreOpinionComment({
+			opinion,
+			actorUserId: req.userId,
+		});
+
+		const io = req.app.get('io');
+		emitClassicBinaryOpinion(io, survey, opinion, 'classic:comment-restored');
+
+		return res.status(200).json({
+			ok: true,
+			surveyId: String(survey._id),
+			type: 'binary',
+			opinionId: String(opinion._id),
+			restoredAt: restoration.restoredAt,
+		});
+	} catch (error) {
+		if (isSurveyCommentModerationError(error)) {
+			return res.status(error.status).json({
+				code: error.code,
+				message: error.message,
+			});
+		}
+		console.error('survey.restoreComment error:', error);
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };

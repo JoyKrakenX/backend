@@ -39,6 +39,18 @@ router.post(
 	auth,
 	survey_2_Ctrl.reviewQuarantineOpinion,
 );
+router.post(
+	'/:id/comments/:opinionId/delete',
+	sensitiveRateLimit,
+	auth,
+	survey_2_Ctrl.deleteComment,
+);
+router.post(
+	'/:id/comments/:opinionId/restore',
+	sensitiveRateLimit,
+	auth,
+	survey_2_Ctrl.restoreComment,
+);
 
 router.patch('/:id/close', sensitiveRateLimit, auth, survey_2_Ctrl.closeSurvey);
 

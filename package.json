@@ -18,6 +18,7 @@
     "fraud:migrate:dry-run": "node scripts/migrate-fraud-fields-and-indexes.js --dry-run",
     "fraud:migrate:execute": "node scripts/migrate-fraud-fields-and-indexes.js --execute",
     "fraud:graph:run": "node scripts/run-fraud-graph-job.js",
+    "moderation:sync:ldnoobw": "node scripts/sync-ldnoobw-wordlists.js",
     "frontend:audit:js-sources": "node ../scripts/audit-frontend-js-sources.mjs",
     "audit:billing-exempt-memberships": "node scripts/audit-billing-exempt-memberships.js"
   },
@@ -42,6 +43,7 @@
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "node-mailjet": "^6.0.11",
+    "openai": "^6.34.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "qrcode": "^1.5.4",

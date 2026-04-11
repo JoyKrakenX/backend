@@ -23,6 +23,7 @@ const statusSchema = z
 
 const explainSchema = z.union([z.boolean(), z.string(), z.number()]).optional();
 const legacyMultipleOptionSchema = z.string().trim().max(220).nullish();
+const localeSchema = z.enum(['fr', 'en', 'es', 'de']).optional();
 
 const createBinarySurveySchema = z.object({
 	theme: z.string().trim().min(2).max(180),
@@ -69,18 +70,21 @@ const binaryVoteSchema = z.object({
 	answer: z.boolean(),
 	reason: z.string().trim().max(2000).optional(),
 	turnstileToken: z.string().trim().min(1).max(4096).optional(),
+	locale: localeSchema,
 });
 
 const multipleVoteSchema = z.object({
 	choice: z.string().trim().min(1).max(280),
 	reason: z.string().trim().max(2000).optional(),
 	turnstileToken: z.string().trim().min(1).max(4096).optional(),
+	locale: localeSchema,
 });
 
 const chatSendSchema = z.object({
 	message: z.string().trim().min(1).max(500),
 	type: z.enum(['binary', 'multiple']).optional(),
 	replyTo: z.string().trim().optional(),
+	locale: localeSchema,
 });
 
 const withZodValidation = (schema) => (req, res, next) => {

@@ -47,6 +47,10 @@ const {
 	buildCommentSubmissionModerationPayload,
 } = require('../services/surveyCommentModerationService');
 const { moderateSurveyComment } = require('../services/contentModerationService');
+const {
+	refreshAndEmitBroadcastSnapshot,
+	emitBroadcastStatus,
+} = require('../services/broadcastRealtimeService');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -455,6 +459,11 @@ exports.submitOpinion = async (req, res) => {
 					totalOpinions: counts.totalOpinions,
 					occurredAt: new Date(),
 				});
+				await refreshAndEmitBroadcastSnapshot({
+					io,
+					surveyId: survey._id,
+					reason: 'survey-vote',
+				});
 			} catch (postCommitError) {
 				console.error('submitOpinion.postCommit error:', postCommitError);
 			}
@@ -677,6 +686,11 @@ exports.closeSurvey = async (req, res) => {
 			endedAt: survey.endedAt,
 			totalOpinions: finalTotalOpinions,
 		});
+		await refreshAndEmitBroadcastSnapshot({
+			io: req.app.get('io'),
+			surveyId: survey._id,
+			reason: 'survey-closed',
+		});
 
 		res.status(200).json({ message: 'Sondage clÃ´turÃ© avec succÃ¨s' });
 	} catch (error) {
@@ -845,6 +859,11 @@ exports.deleteComment = async (req, res) => {
 			opinionId: String(opinion._id),
 			deletedAt: deletion.deletedAt,
 		});
+		await refreshAndEmitBroadcastSnapshot({
+			io,
+			surveyId: survey._id,
+			reason: 'comment-deleted',
+		});
 
 		return res.status(200).json({
 			ok: true,
@@ -903,6 +922,11 @@ exports.restoreComment = async (req, res) => {
 
 		const io = req.app.get('io');
 		emitClassicBinaryOpinion(io, survey, opinion, 'classic:comment-restored');
+		emitBroadcastStatus(io, survey._id, {
+			reason: 'candidate:restored',
+			sourceType: 'survey_comment',
+			sourceId: String(opinion._id),
+		});
 
 		return res.status(200).json({
 			ok: true,
@@ -1013,6 +1037,11 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 			endedAt: survey.endedAt,
 			totalOpinions: counts.totalOpinions,
 			occurredAt: new Date(),
+		});
+		await refreshAndEmitBroadcastSnapshot({
+			io,
+			surveyId: survey._id,
+			reason: 'quarantine-reviewed',
 		});
 
 		const integrity = await getIntegritySnapshotForSurvey(

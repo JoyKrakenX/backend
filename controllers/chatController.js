@@ -36,6 +36,10 @@ const {
 	formatChatMessagePayload,
 	normalizeObjectId,
 } = require('../services/chatMessagePayloadService');
+const {
+	refreshAndEmitBroadcastSnapshot,
+	emitBroadcastStatus,
+} = require('../services/broadcastRealtimeService');
 
 const getSurveyModelName = (type) =>
 	type === 'multiple' ? 'Survey_2' : 'Survey';
@@ -374,6 +378,11 @@ exports.sendMessage = async (req, res, next) => {
 
 		const io = req.app.get('io');
 		io.to(`survey-${surveyId}`).emit('newMessage', formattedMessage);
+		emitBroadcastStatus(io, surveyId, {
+			reason: 'candidate:new',
+			sourceType: 'chat_message',
+			sourceId: String(chatMessage._id),
+		});
 		const replyTargetUserId = normalizeObjectId(replyToInfo?.userId);
 		if (replyTargetUserId && replyTargetUserId !== String(req.userId)) {
 			io.to(buildSurveyUserRoomName(surveyId, replyTargetUserId)).emit(
@@ -563,6 +572,11 @@ exports.deleteMessage = async (req, res, next) => {
 				messageId: String(chatMessage._id),
 				surveyId: String(chatMessage.surveyId),
 				totalMessages,
+			});
+			await refreshAndEmitBroadcastSnapshot({
+				io,
+				surveyId: chatMessage.surveyId,
+				reason: 'chat-message-deleted',
 			});
 		}
 

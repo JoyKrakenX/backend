@@ -36,6 +36,10 @@ const {
 	buildCommentSubmissionModerationPayload,
 } = require('../services/surveyCommentModerationService');
 const { moderateSurveyComment } = require('../services/contentModerationService');
+const {
+	refreshAndEmitBroadcastSnapshot,
+	emitBroadcastStatus,
+} = require('../services/broadcastRealtimeService');
 
 const sanitizeSurveyForClient = (survey) => {
 	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
@@ -322,6 +326,11 @@ exports.submitOpinion = async (req, res) => {
 					totalOpinions: countsPayload.totalOpinions,
 					occurredAt: new Date(),
 				});
+				await refreshAndEmitBroadcastSnapshot({
+					io,
+					surveyId: survey._id,
+					reason: 'survey-vote',
+				});
 			} catch (postCommitError) {
 				console.error('surveyFlash.submitOpinion.postCommit error:', postCommitError);
 			}
@@ -605,6 +614,11 @@ exports.restoreComment = async (req, res) => {
 				userDisliked: false,
 			});
 		}
+		emitBroadcastStatus(io, survey._id, {
+			reason: 'candidate:restored',
+			sourceType: 'survey_comment',
+			sourceId: String(opinion._id),
+		});
 
 		return res.status(200).json({
 			ok: true,
@@ -673,6 +687,11 @@ exports.deleteComment = async (req, res) => {
 			type: 'binary',
 			opinionId: String(opinion._id),
 			deletedAt: deletion.deletedAt,
+		});
+		await refreshAndEmitBroadcastSnapshot({
+			io,
+			surveyId: survey._id,
+			reason: 'comment-deleted',
 		});
 
 		return res.status(200).json({
@@ -782,6 +801,11 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 			endedAt: survey.endedAt,
 			totalOpinions: countsPayload.totalOpinions,
 			occurredAt: new Date(),
+		});
+		await refreshAndEmitBroadcastSnapshot({
+			io,
+			surveyId: survey._id,
+			reason: 'quarantine-reviewed',
 		});
 
 		const integrity = await getIntegritySnapshotForSurvey(OpinionFlash, survey._id);

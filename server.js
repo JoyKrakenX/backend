@@ -9,6 +9,7 @@ const supportHandlers = require('./sockets/supportHandlers');
 const flashSurveyHandlers = require('./sockets/flashSurveyHandlers');
 const classicSurveyHandlers = require('./sockets/classicSurveyHandlers');
 const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
+const broadcastHandlers = require('./sockets/broadcastHandlers');
 const { getRedisClient, getRedisSubscriber } = require('./services/redisService');
 const { registerBillingLifecycleJob } = require('./services/billing/billingLifecycleJob');
 const { registerFraudGraphJob } = require('./services/fraud/fraudGraphJobService');
@@ -50,6 +51,7 @@ chatHandlers(io);
 flashSurveyHandlers(io);
 classicSurveyHandlers(io);
 surveyFeedHandlers(io);
+broadcastHandlers(io);
 supportHandlers(io.of('/support'));
 
 io.on('connection', (socket) => {

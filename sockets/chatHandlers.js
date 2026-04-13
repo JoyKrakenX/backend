@@ -38,6 +38,7 @@ const {
 	formatChatMessagePayload,
 	normalizeObjectId,
 } = require('../services/chatMessagePayloadService');
+const { emitBroadcastStatus } = require('../services/broadcastRealtimeService');
 const {
 	canManageSurveyByOrganization,
 } = require('../services/surveyAuthorizationService');
@@ -736,6 +737,11 @@ module.exports = (io) => {
 				}
 
 				io.to(buildRoomName(surveyId)).emit('newMessage', formattedMessage);
+				emitBroadcastStatus(io, surveyId, {
+					reason: 'candidate:new',
+					sourceType: 'chat_message',
+					sourceId: String(chatMessage._id),
+				});
 				const replyTargetUserId = normalizeObjectId(replyToInfo?.userId);
 				if (
 					replyTargetUserId &&

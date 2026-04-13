@@ -60,6 +60,10 @@ const {
 	buildCommentSubmissionModerationPayload,
 } = require('../services/surveyCommentModerationService');
 const { moderateSurveyComment } = require('../services/contentModerationService');
+const {
+	refreshAndEmitBroadcastSnapshot,
+	emitBroadcastStatus,
+} = require('../services/broadcastRealtimeService');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -511,6 +515,11 @@ exports.submitOpinion = async (req, res) => {
 					totalOpinions,
 					occurredAt: new Date(),
 				});
+				await refreshAndEmitBroadcastSnapshot({
+					io,
+					surveyId: survey._id,
+					reason: 'survey-vote',
+				});
 			} catch (postCommitError) {
 				console.error('survey_2.submitOpinion.postCommit error:', postCommitError);
 			}
@@ -650,6 +659,11 @@ exports.closeSurvey = async (req, res) => {
 			createdAt: survey.createdAt,
 			endedAt: survey.endedAt,
 			totalOpinions: finalTotalOpinions,
+		});
+		await refreshAndEmitBroadcastSnapshot({
+			io: req.app.get('io'),
+			surveyId: survey._id,
+			reason: 'survey-closed',
 		});
 
 		return res.status(200).json({ message: 'Sondage cloture avec succes.' });
@@ -927,6 +941,11 @@ exports.restoreComment = async (req, res) => {
 			opinion,
 			eventName: 'classic:comment-restored',
 		});
+		emitBroadcastStatus(io, survey._id, {
+			reason: 'candidate:restored',
+			sourceType: 'survey_comment',
+			sourceId: String(opinion._id),
+		});
 
 		return res.status(200).json({
 			ok: true,
@@ -991,6 +1010,11 @@ exports.deleteComment = async (req, res) => {
 			type: 'multiple',
 			opinionId: String(opinion._id),
 			deletedAt: deletion.deletedAt,
+		});
+		await refreshAndEmitBroadcastSnapshot({
+			io,
+			surveyId: survey._id,
+			reason: 'comment-deleted',
 		});
 
 		return res.status(200).json({
@@ -1123,6 +1147,11 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 			endedAt: survey.endedAt,
 			totalOpinions,
 			occurredAt: new Date(),
+		});
+		await refreshAndEmitBroadcastSnapshot({
+			io,
+			surveyId: survey._id,
+			reason: 'quarantine-reviewed',
 		});
 
 		const integrity = await getIntegritySnapshotForSurvey(

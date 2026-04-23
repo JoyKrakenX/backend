@@ -40,12 +40,31 @@ const broadcastRoutes = require('./routes/broadcast');
 const { globalRateLimit } = require('./middlewares/securityRateLimit');
 const { ensurePlanCatalog } = require('./services/billing/planService');
 const { validateProductionSecrets } = require('./utils/securityStartup');
+const { ensureUploadsRoot } = require('./utils/runtimePaths');
 const riskIdentity = require('./middlewares/riskIdentity');
 
 validateProductionSecrets();
 
 const app = express();
 app.set('trust proxy', 1);
+
+app.get('/health', (_req, res) => {
+	const mongoState = Number(mongoose.connection?.readyState || 0);
+	const mongoStatus =
+		mongoState === 1 ? 'connected'
+		: mongoState === 2 ? 'connecting'
+		: mongoState === 3 ? 'disconnecting'
+		: 'disconnected';
+
+	return res.status(200).json({
+		ok: true,
+		service: 'community-backend',
+		uptimeSec: Math.round(process.uptime()),
+		timestamp: new Date().toISOString(),
+		mongo: mongoStatus,
+		redisConfigured: Boolean(String(process.env.REDIS_URL || '').trim()),
+	});
+});
 
 // ---------------------------
 // CORS
@@ -182,7 +201,7 @@ app.use('/api/broadcast', broadcastRoutes);
 // ---------------------------
 // Uploads statiques
 // ---------------------------
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(ensureUploadsRoot()));
 
 // ---------------------------
 // Frontend statique + SPA catch-all

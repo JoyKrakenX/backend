@@ -1,5 +1,6 @@
 /** @format */
 const http = require('http');
+const mongoose = require('mongoose');
 const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 
@@ -10,7 +11,11 @@ const flashSurveyHandlers = require('./sockets/flashSurveyHandlers');
 const classicSurveyHandlers = require('./sockets/classicSurveyHandlers');
 const surveyFeedHandlers = require('./sockets/surveyFeedHandlers');
 const broadcastHandlers = require('./sockets/broadcastHandlers');
-const { getRedisClient, getRedisSubscriber } = require('./services/redisService');
+const {
+	getRedisClient,
+	getRedisSubscriber,
+	closeRedisConnections,
+} = require('./services/redisService');
 const { registerBillingLifecycleJob } = require('./services/billing/billingLifecycleJob');
 const { registerFraudGraphJob } = require('./services/fraud/fraudGraphJobService');
 const { primeContentModeration } = require('./services/contentModerationService');
@@ -100,6 +105,35 @@ const start = async () => {
 	}
 	server.listen(port);
 };
+
+let shuttingDown = false;
+
+const gracefulShutdown = async (signal) => {
+	if (shuttingDown) return;
+	shuttingDown = true;
+
+	console.log(`Received ${signal}. Shutting down Community gracefully...`);
+
+	await new Promise((resolve) => {
+		server.close(() => resolve());
+		setTimeout(resolve, 10_000).unref();
+	});
+
+	await Promise.allSettled([
+		closeRedisConnections(),
+		mongoose.connection?.close?.(),
+	]);
+
+	process.exit(0);
+};
+
+process.on('SIGTERM', () => {
+	void gracefulShutdown('SIGTERM');
+});
+
+process.on('SIGINT', () => {
+	void gracefulShutdown('SIGINT');
+});
 
 start().catch((error) => {
 	console.error('Server startup failed:', error);

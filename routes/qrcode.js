@@ -10,6 +10,7 @@ const QRcode = require('qrcode');
 const Survey = require('../models/Survey');
 const Survey_2 = require('../models/Survey_2');
 const { buildFrontendUrl } = require('../utils/publicUrls');
+const { getUploadsRoot, ensureUploadsSubdir } = require('../utils/runtimePaths');
 
 const router = express.Router();
 const QR_LAYOUT_VERSION = 'layoutV4';
@@ -136,11 +137,12 @@ function readLogoDataUri(logoPath) {
 }
 
 function resolveLogoPath() {
+	const uploadsRoot = getUploadsRoot();
 	const candidates = [
-		path.join(__dirname, '../uploads/logo.svg'),
-		path.join(__dirname, '../uploads/logo.png'),
-		path.join(__dirname, '../uploads/logo.jpg'),
-		path.join(__dirname, '../uploads/logo.jpeg'),
+		path.join(uploadsRoot, 'logo.svg'),
+		path.join(uploadsRoot, 'logo.png'),
+		path.join(uploadsRoot, 'logo.jpg'),
+		path.join(uploadsRoot, 'logo.jpeg'),
 		path.join(__dirname, '../../frontend/assets/logo.svg'),
 		path.join(__dirname, '../../frontend/assets/logo.png'),
 	];
@@ -192,10 +194,7 @@ router.post('/generate', async (req, res) => {
 		const targetUrl = urls.answer;
 		const cacheKey = buildCacheKey(targetUrl, type, explain);
 
-		const outputDir = path.join(__dirname, '../uploads/qrcodes');
-		if (!fs.existsSync(outputDir)) {
-			fs.mkdirSync(outputDir, { recursive: true });
-		}
+		const outputDir = ensureUploadsSubdir('qrcodes');
 
 		const filename = `survey-${surveyId}-${cacheKey}.svg`;
 		const outputPath = path.join(outputDir, filename);

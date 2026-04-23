@@ -2,20 +2,16 @@
 
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const supportController = require('../controllers/supportController');
 const requireAuth = require('../middlewares/requireAuth');
 const requireRole = require('../middlewares/requireRole');
 const requireSupportAdminEmail = require('../middlewares/requireSupportAdminEmail');
 const rateLimit = require('../middlewares/simpleRateLimit');
+const { ensureUploadsSubdir } = require('../utils/runtimePaths');
 
 const router = express.Router();
 
-const uploadDir = path.join(__dirname, '..', 'uploads', 'support');
-if (!fs.existsSync(uploadDir)) {
-	fs.mkdirSync(uploadDir, { recursive: true });
-}
+const uploadDir = ensureUploadsSubdir('support');
 
 const allowedMimeTypes = new Set([
 	'image/jpeg',

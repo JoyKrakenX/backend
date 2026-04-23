@@ -35,7 +35,28 @@ const getRedisSubscriber = async () => {
 	return redisSubscriber;
 };
 
+const closeRedisConnections = async () => {
+	const closers = [redisSubscriber, redisClient].filter(Boolean);
+	redisSubscriber = null;
+	redisClient = null;
+
+	await Promise.allSettled(
+		closers.map(async (client) => {
+			try {
+				if (client.status === 'ready' || client.status === 'connect') {
+					await client.quit();
+					return;
+				}
+				client.disconnect();
+			} catch (_error) {
+				client.disconnect();
+			}
+		}),
+	);
+};
+
 module.exports = {
 	getRedisClient,
 	getRedisSubscriber,
+	closeRedisConnections,
 };

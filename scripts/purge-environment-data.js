@@ -21,6 +21,7 @@ const {
 	getSupportAdminEmails,
 	normalizeEmail,
 } = require('../utils/supportAdminAllowlist');
+const { getUploadsSubdir } = require('../utils/runtimePaths');
 
 const DEFAULT_SCOPE = 'full';
 const EXECUTE_CONFIRMATION_TOKEN = 'CLEAN_TEST_DATA';
@@ -432,8 +433,8 @@ async function run() {
 			operation.deletedCounts[collectionName] = Number(result.deletedCount || 0);
 		}
 
-		const qrDir = path.join(__dirname, '..', 'uploads', 'qrcodes');
-		const supportDir = path.join(__dirname, '..', 'uploads', 'support');
+		const qrDir = getUploadsSubdir('qrcodes');
+		const supportDir = getUploadsSubdir('support');
 		operation.artifactCleanup.qrCodesRemoved = cleanupQrCodeArtifacts(qrDir).map(
 			(filePath) => toRelativePath(path.join(__dirname, '..'), filePath),
 		);

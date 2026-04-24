@@ -86,7 +86,7 @@ const buildProviderErrorMessage = (parsed = {}, fallback = null) => {
 
 const requestJson = async ({ method, path, body }) => {
 	if (!isConfigured()) {
-		throw new Error('FedaPay non configure.');
+		throw new Error('FedaPay non configuré.');
 	}
 
 	const response = await fetch(`${FEDAPAY_BASE_URL}${path}`, {

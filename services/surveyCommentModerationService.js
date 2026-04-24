@@ -190,7 +190,7 @@ const validateOpinionCommentModerationTarget = ({
 		throw createSurveyCommentModerationError(
 			403,
 			SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
-			"Vous devez etre owner ou admin de l'organisation pour moderer ce commentaire.",
+			"Vous devez être owner ou admin de l'organisation pour modérer ce commentaire.",
 		);
 	}
 
@@ -214,7 +214,7 @@ const validateOpinionCommentModerationTarget = ({
 		throw createSurveyCommentModerationError(
 			409,
 			SURVEY_COMMENT_ERROR_CODES.COMMENT_ALREADY_DELETED,
-			'Ce commentaire a deja ete supprime.',
+			'Ce commentaire a déjà été supprimé.',
 		);
 	}
 
@@ -283,7 +283,7 @@ const restoreOpinionComment = async ({
 		throw createSurveyCommentModerationError(
 			409,
 			SURVEY_COMMENT_ERROR_CODES.COMMENT_RESTORE_UNAVAILABLE,
-			'Ce commentaire est deja visible.',
+			'Ce commentaire est déjà visible.',
 		);
 	}
 

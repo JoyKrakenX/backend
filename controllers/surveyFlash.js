@@ -223,7 +223,7 @@ exports.submitOpinion = async (req, res) => {
 		if (fraudDecision.decision === 'blocked') {
 			return res.status(fraudDecision.httpStatus || 403).json({
 				code: fraudDecision.code || 'FRAUD_BLOCKED',
-				message: fraudDecision.message || 'Vote bloque pour risque eleve.',
+				message: fraudDecision.message || 'Vote bloqué pour risque élevé.',
 			});
 		}
 
@@ -262,7 +262,7 @@ exports.submitOpinion = async (req, res) => {
 
 		await opinion.save();
 		res.status(201).json({
-			message: 'Opinion enregistree !',
+			message: 'Opinion enregistrée !',
 			hasParticipated: true,
 			canVote: false,
 			canViewResults: true,
@@ -462,7 +462,7 @@ exports.getIntegrity = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const integrity = await getIntegritySnapshotForSurvey(OpinionFlash, survey._id);
@@ -492,7 +492,7 @@ exports.getQuarantineQueue = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const limit = Math.min(
@@ -588,7 +588,7 @@ exports.restoreComment = async (req, res) => {
 		if (!canManage) {
 			return res.status(403).json({
 				code: SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
-				message: "Vous devez etre owner ou admin de l'organisation pour moderer ce commentaire.",
+				message: "Vous devez être owner ou admin de l'organisation pour modérer ce commentaire.",
 			});
 		}
 
@@ -732,7 +732,7 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const opinion = await OpinionFlash.findOne({

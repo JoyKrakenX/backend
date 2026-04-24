@@ -9,7 +9,7 @@ const nullableNumberField = {
 		validator(value) {
 			return value === null || (Number.isFinite(value) && value >= 0);
 		},
-		message: 'La valeur doit etre nulle ou un nombre positif.',
+		message: 'La valeur doit être nulle ou un nombre positif.',
 	},
 };
 

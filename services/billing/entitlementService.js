@@ -405,7 +405,7 @@ const authorizeActionUncached = async ({
 	if (isManagementAction && !['owner', 'admin'].includes(String(context.role || ''))) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.FORBIDDEN,
-			'Acces reserve aux administrateurs de l organisation.',
+			"Accès réservé aux administrateurs de l'organisation.",
 		);
 	}
 
@@ -434,7 +434,7 @@ const authorizeActionUncached = async ({
 	if (!canWriteWithStatus(context.subscription.status)) {
 		return denyWithAudit(
 			ENTITLEMENT_DENY_CODES.READ_ONLY,
-			'Organisation en mode lecture seule. Veuillez regulariser le paiement.',
+			'Organisation en mode lecture seule. Veuillez régulariser le paiement.',
 			{
 				subscription: context.subscription,
 			},

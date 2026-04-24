@@ -195,7 +195,7 @@ const mapExistingSubscriberResponse = (subscriber) => {
 		return {
 			httpStatus: 200,
 			status: 'already_subscribed',
-			message: 'Cette adresse email est deja inscrite a la newsletter.',
+			message: 'Cette adresse email est déjà inscrite à la newsletter.',
 		};
 	}
 	if (hasPendingTokenStillValid(subscriber)) {
@@ -203,7 +203,7 @@ const mapExistingSubscriberResponse = (subscriber) => {
 			httpStatus: 200,
 			status: 'pending_exists',
 			message:
-				'Une confirmation est deja en attente pour cette adresse. Verifiez votre boite email.',
+				'Une confirmation est déjà en attente pour cette adresse. Vérifiez votre boîte email.',
 		};
 	}
 	return null;
@@ -263,7 +263,7 @@ exports.subscribe = async (req, res) => {
 			return res.status(503).json({
 				status: 'service_unavailable',
 				message:
-					"Le service email est indisponible pour le moment. Reessayez plus tard.",
+					"Le service email est indisponible pour le moment. Réessayez plus tard.",
 			});
 		}
 
@@ -272,7 +272,7 @@ exports.subscribe = async (req, res) => {
 			return res.status(503).json({
 				status: 'service_unavailable',
 				message:
-					'Configuration serveur incomplete pour les liens de confirmation newsletter.',
+					'Configuration serveur incomplète pour les liens de confirmation newsletter.',
 			});
 		}
 
@@ -284,7 +284,7 @@ exports.subscribe = async (req, res) => {
 			await subscriber.save();
 			return res.status(200).json({
 				status: 'already_subscribed',
-				message: 'Cette adresse email est deja inscrite a la newsletter.',
+				message: 'Cette adresse email est déjà inscrite à la newsletter.',
 			});
 		}
 
@@ -300,7 +300,7 @@ exports.subscribe = async (req, res) => {
 				return res.status(200).json({
 					status: 'pending_retry_later',
 					retryAfterSeconds: windowState.retryAfterSeconds,
-					message: `Trop de relances pour cette adresse. Reessayez dans ${windowState.retryAfterSeconds}s.`,
+					message: `Trop de relances pour cette adresse. Réessayez dans ${windowState.retryAfterSeconds}s.`,
 				});
 			}
 
@@ -310,7 +310,7 @@ exports.subscribe = async (req, res) => {
 				return res.status(200).json({
 					status: 'pending_cooldown',
 					cooldownSeconds,
-					message: `Une confirmation est deja en attente. Reessayez dans ${cooldownSeconds}s.`,
+					message: `Une confirmation est déjà en attente. Réessayez dans ${cooldownSeconds}s.`,
 				});
 			}
 
@@ -341,7 +341,7 @@ exports.subscribe = async (req, res) => {
 
 			return res.status(202).json({
 				status: 'pending_resent',
-				message: 'Un nouvel email de confirmation a ete envoye.',
+				message: 'Un nouvel email de confirmation a été envoyé.',
 			});
 		}
 
@@ -396,7 +396,7 @@ exports.subscribe = async (req, res) => {
 			return res.status(503).json({
 				status: 'service_unavailable',
 				message:
-					"Impossible d'envoyer l'email de confirmation pour le moment. Reessayez plus tard.",
+					"Impossible d'envoyer l'email de confirmation pour le moment. Réessayez plus tard.",
 			});
 		}
 
@@ -430,7 +430,7 @@ exports.confirm = async (req, res) => {
 		});
 
 		if (!subscriber) {
-			const message = 'Lien invalide ou expire. Veuillez refaire une inscription.';
+			const message = 'Lien invalide ou expiré. Veuillez refaire une inscription.';
 			if (respondAsHtml) {
 				return redirectNewsletterStatus(
 					res,
@@ -451,7 +451,7 @@ exports.confirm = async (req, res) => {
 
 		const payload = {
 			status: 'confirmed',
-			message: 'Votre abonnement newsletter est confirme.',
+			message: 'Votre abonnement newsletter est confirmé.',
 		};
 		if (respondAsHtml) {
 			return redirectNewsletterStatus(
@@ -510,7 +510,7 @@ exports.unsubscribe = async (req, res) => {
 
 		const payload = {
 			status: 'unsubscribed',
-			message: 'Vous etes desinscrit de la newsletter.',
+			message: 'Vous êtes désinscrit de la newsletter.',
 		};
 		if (respondAsHtml) {
 			return redirectNewsletterStatus(

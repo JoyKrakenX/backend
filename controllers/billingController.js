@@ -61,14 +61,14 @@ const BILLING_ERROR_CODES = Object.freeze({
 
 const BILLING_ERROR_MESSAGES = Object.freeze({
 	[BILLING_ERROR_CODES.PROVIDER_AMOUNT_CAP]:
-		'Le montant depasse le plafond autorise par le fournisseur de paiement.',
+		'Le montant dépasse le plafond autorisé par le fournisseur de paiement.',
 	[BILLING_ERROR_CODES.PROVIDER_UNAVAILABLE]:
-		'Service de paiement indisponible. Reessayez plus tard.',
+		'Service de paiement indisponible. Réessayez plus tard.',
 	[BILLING_ERROR_CODES.CHECKOUT_INIT_FAILED]: 'Impossible de lancer le checkout.',
 	[BILLING_ERROR_CODES.ADDON_NOT_ALLOWED]:
 		"Cet add-on n'est pas disponible pour votre plan actuel.",
 	[BILLING_ERROR_CODES.ADDON_INVALID_QUANTITY]:
-		'Quantite addon invalide pour cette commande.',
+		"Quantité d'add-on invalide pour cette commande.",
 });
 
 const BILLING_ERROR_STATUS_BY_CODE = Object.freeze({
@@ -110,7 +110,7 @@ const buildMetrics = ({ quotas = {}, plan = null, usage, adminsCount }) => {
 	const source = [
 		{
 			key: 'votes',
-			label: 'Reponses',
+			label: 'Réponses',
 			consumed: Number(counts.votes || 0),
 			quota: resolvedQuotas.votes ?? null,
 		},
@@ -665,7 +665,7 @@ exports.createAddonCheckout = async (req, res) => {
 		}
 
 		if (!['owner', 'admin'].includes(String(req.activeOrganizationRole || '').toLowerCase())) {
-			return res.status(403).json({ message: 'Acces reserve aux admins de cette organisation.' });
+			return res.status(403).json({ message: 'Accès réservé aux admins de cette organisation.' });
 		}
 
 		const parsed = addonCheckoutSchema.safeParse(req.body || {});
@@ -774,7 +774,7 @@ exports.retryPayment = async (req, res) => {
 			  }).sort({ createdAt: -1 });
 
 		if (!invoice) {
-			return res.status(404).json({ message: 'Aucune facture a relancer.' });
+			return res.status(404).json({ message: 'Aucune facture à relancer.' });
 		}
 
 		const subscription = await getOrganizationSubscription(req.activeOrganizationId);
@@ -841,7 +841,7 @@ exports.getCheckoutStatus = async (req, res) => {
 						transactionId: String(transaction?.id || invoice?.provider?.transactionId || ''),
 						reason: {
 							code: 'TX_STATUS_FAILED',
-							message: 'Paiement refuse ou annule.',
+							message: 'Paiement refusé ou annulé.',
 						},
 					});
 				}
@@ -851,7 +851,7 @@ exports.getCheckoutStatus = async (req, res) => {
 					level: 'warning',
 					action: 'checkout_status_poll',
 					code: 'POLL_ERROR',
-					message: error?.message || 'Erreur lors du polling transaction.',
+					message: error?.message || 'Erreur lors de la vérification de la transaction.',
 					organizationId: invoice.organizationId,
 					meta: {
 						invoiceId: String(invoice._id),
@@ -952,7 +952,7 @@ exports.fedapayWebhook = async (req, res) => {
 				transactionId,
 				reason: {
 					code: 'TX_STATUS_FAILED',
-					message: 'Paiement refuse ou annule.',
+					message: 'Paiement refusé ou annulé.',
 				},
 			});
 			paymentEvent.status = 'failed';
@@ -973,6 +973,6 @@ exports.fedapayWebhook = async (req, res) => {
 		return res.status(200).json({ ok: true, status: settlement.status });
 	} catch (error) {
 		console.error('billing.fedapayWebhook:', error);
-		return res.status(500).json({ message: 'Webhook processing error.' });
+		return res.status(500).json({ message: 'Erreur de traitement du webhook.' });
 	}
 };

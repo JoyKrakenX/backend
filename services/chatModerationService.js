@@ -175,7 +175,7 @@ const validateModerationTarget = ({
 		throw createChatModerationError(
 			403,
 			CHAT_ERROR_CODES.MODERATION_FORBIDDEN,
-			'Vous devez etre owner ou admin de cette organisation pour moderer le chat.',
+			'Vous devez être owner ou admin de cette organisation pour modérer le chat.',
 		);
 	}
 
@@ -202,7 +202,7 @@ const validateModerationTarget = ({
 		throw createChatModerationError(
 			403,
 			CHAT_ERROR_CODES.MODERATION_FORBIDDEN,
-			'Vous ne pouvez pas vous moderer vous-meme.',
+			'Vous ne pouvez pas vous modérer vous-même.',
 		);
 	}
 

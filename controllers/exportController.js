@@ -40,7 +40,7 @@ exports.requestSurveyExport = async (req, res) => {
 		const canManageSurvey = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManageSurvey) {
 			return res.status(403).json({
-				message: "Acces reserve au createur ou aux admins de l'organisation.",
+				message: "Accès réservé au créateur ou aux admins de l'organisation.",
 			});
 		}
 

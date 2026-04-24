@@ -5,7 +5,7 @@ const SUPPORTED_LOCALES = new Set(['fr', 'en', 'es', 'de']);
 
 const escapeHtml = (value) =>
 	String(value ?? '')
-		.replace(/&/g, '&amp;')
+		.replace(/&/g, '&')
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;')
 		.replace(/"/g, '&quot;')
@@ -18,12 +18,12 @@ const normalizeLocale = (locale) => {
 
 const CONTENT = {
 	fr: {
-		subject: 'Confirmez votre inscription a la newsletter Community',
+		subject: 'Confirmez votre inscription à la newsletter Community',
 		preheader:
 			'Confirmez votre abonnement en un clic pour recevoir les nouveautes Community.',
 		title: 'Confirmez votre inscription',
 		lead:
-			'Merci pour votre inscription a la newsletter Community. Un clic suffit pour activer votre abonnement.',
+			'Merci pour votre inscription à la newsletter Community. Un clic suffit pour activer votre abonnement.',
 		benefitsTitle: 'Ce que vous recevrez',
 		benefits: [
 			'Les nouvelles fonctionnalites en avant-premiere',
@@ -36,7 +36,7 @@ const CONTENT = {
 		security:
 			"Si vous n'etes pas a l'origine de cette demande, ignorez simplement cet email.",
 		unsubscribe: 'Se desinscrire',
-		copyright: 'Community. Tous droits reserves.',
+		copyright: 'Community. Tous droits réservés.',
 	},
 	en: {
 		subject: 'Confirm your Community newsletter subscription',

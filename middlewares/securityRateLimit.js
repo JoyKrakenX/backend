@@ -19,7 +19,7 @@ const buildLimiter = async ({ windowMs, max, prefix }) => {
 			standardHeaders: true,
 			legacyHeaders: false,
 			message: {
-				message: 'Trop de requetes. Veuillez reessayer plus tard.',
+				message: 'Trop de requêtes. Veuillez réessayer plus tard.',
 			},
 			handler: (req, res, _next, options) => {
 				logSecurityEvent({
@@ -27,7 +27,7 @@ const buildLimiter = async ({ windowMs, max, prefix }) => {
 					level: 'warning',
 					action: req?.path || 'unknown',
 					code: 'RATE_LIMIT',
-					message: 'Trop de requetes.',
+					message: 'Trop de requêtes.',
 					userId: req?.userId || null,
 					userEmail: req?.userEmail || req?.user?.email || null,
 					ip: req?.ip || null,
@@ -50,7 +50,7 @@ const buildLimiter = async ({ windowMs, max, prefix }) => {
 		standardHeaders: true,
 		legacyHeaders: false,
 		message: {
-			message: 'Trop de requetes. Veuillez reessayer plus tard.',
+			message: 'Trop de requêtes. Veuillez réessayer plus tard.',
 		},
 		handler: (req, res, _next, options) => {
 			logSecurityEvent({
@@ -58,7 +58,7 @@ const buildLimiter = async ({ windowMs, max, prefix }) => {
 				level: 'warning',
 				action: req?.path || 'unknown',
 				code: 'RATE_LIMIT',
-				message: 'Trop de requetes.',
+				message: 'Trop de requêtes.',
 				userId: req?.userId || null,
 				userEmail: req?.userEmail || req?.user?.email || null,
 				ip: req?.ip || null,

@@ -91,7 +91,7 @@ exports.getPublicKey = async (_req, res) => {
 	try {
 		if (!canSendPush()) {
 			return res.status(503).json({
-				message: 'Les notifications push ne sont pas configurees.',
+				message: 'Les notifications push ne sont pas configurées.',
 			});
 		}
 		return res.status(200).json({
@@ -137,7 +137,7 @@ exports.subscribe = async (req, res) => {
 			!identity.allowlisted
 		) {
 			throw createUserError(
-				'Acces reserve a l administrateur support autorise.',
+				"Accès réservé à l'administrateur support autorisé.",
 				403,
 			);
 		}
@@ -154,7 +154,7 @@ exports.subscribe = async (req, res) => {
 		});
 
 		return res.status(200).json({
-			message: 'Abonnement push active.',
+			message: 'Abonnement push activé.',
 			subscription: {
 				id: saved?._id || null,
 				endpoint: saved?.endpoint || null,
@@ -219,7 +219,7 @@ exports.unsubscribe = async (req, res) => {
 			});
 
 			return res.status(200).json({
-				message: 'Canaux push mis a jour.',
+				message: 'Canaux push mis à jour.',
 				deleted: Number(result?.deletedCount || 0),
 				modified: Number(result?.modifiedCount || 0),
 				remainingChannels: Array.isArray(result?.remainingChannels) ?
@@ -234,13 +234,13 @@ exports.unsubscribe = async (req, res) => {
 		});
 
 		return res.status(200).json({
-			message: 'Abonnement push desactive.',
+			message: 'Abonnement push désactivé.',
 			deleted: Number(result?.deletedCount || 0),
 		});
 	} catch (error) {
 		const mapped = mapPushError(
 			error,
-			"Impossible de desactiver l'abonnement push.",
+			"Impossible de désactiver l'abonnement push.",
 		);
 		return res.status(mapped.status).json({ message: mapped.message });
 	}
@@ -257,13 +257,13 @@ exports.unsubscribeAll = async (req, res) => {
 		});
 
 		return res.status(200).json({
-			message: 'Tous les abonnements push ont ete desactives.',
+			message: 'Tous les abonnements push ont été désactivés.',
 			deleted: Number(result?.deletedCount || 0),
 		});
 	} catch (error) {
 		const mapped = mapPushError(
 			error,
-			"Impossible de desactiver les abonnements push.",
+			"Impossible de désactiver les abonnements push.",
 		);
 		return res.status(mapped.status).json({ message: mapped.message });
 	}

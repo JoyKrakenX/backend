@@ -31,7 +31,7 @@ const survey_2_Schema = mongoose.Schema({
 					value.length <= MAX_MULTIPLE_OPTIONS
 				);
 			},
-			message: `Le nombre d'options doit etre compris entre ${MIN_MULTIPLE_OPTIONS} et ${MAX_MULTIPLE_OPTIONS}.`,
+			message: `Le nombre d'options doit être compris entre ${MIN_MULTIPLE_OPTIONS} et ${MAX_MULTIPLE_OPTIONS}.`,
 		},
 	},
 	reponse_1: { type: String, default: null },

@@ -72,7 +72,7 @@ const storeCachedRates = async (snapshot) => {
 
 const fetchLatestRates = async () => {
 	if (!isFxConfigured()) {
-		throw new Error('Open Exchange Rates non configure (OXR_APP_ID manquant).');
+		throw new Error('Open Exchange Rates non configuré (OXR_APP_ID manquant).');
 	}
 
 	const url = `${OXR_BASE_URL}?app_id=${encodeURIComponent(getAppId())}&base=USD`;

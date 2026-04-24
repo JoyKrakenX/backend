@@ -26,7 +26,7 @@ module.exports = async (req, res, next) => {
 		if (!context.ok) {
 			return res.status(403).json({
 				code: context.code,
-				message: "Impossible de resoudre l'organisation active.",
+				message: "Impossible de résoudre l'organisation active.",
 			});
 		}
 

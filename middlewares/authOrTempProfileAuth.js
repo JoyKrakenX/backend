@@ -75,7 +75,7 @@ module.exports = (req, res, next) => {
 		req.tempTokenPayload = decodedTemp;
 		return next();
 	} catch (_error) {
-		return res.status(401).json({ message: 'Token temporaire invalide ou expire.' });
+		return res.status(401).json({ message: 'Token temporaire invalide ou expiré.' });
 	}
 };
 

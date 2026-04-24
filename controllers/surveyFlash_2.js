@@ -129,7 +129,7 @@ exports.getState = async (req, res) => {
 		};
 
 		if (survey.isClosed && !canViewResults) {
-			payload.message = 'Ce sondage est cloture. Les resultats sont reserves aux votants.';
+			payload.message = 'Ce sondage est clôturé. Les résultats sont réservés aux votants.';
 		}
 
 		return res.status(200).json(payload);
@@ -152,7 +152,7 @@ exports.submitOpinion = async (req, res) => {
 
 		if (survey.isClosed) {
 			return res.status(403).json({
-				message: 'Le sondage est cloture, vous ne pouvez plus y repondre.',
+				message: 'Le sondage est clôturé, vous ne pouvez plus y répondre.',
 			});
 		}
 		const organizationId = await resolveSurveyOrganizationId(survey);
@@ -184,7 +184,7 @@ exports.submitOpinion = async (req, res) => {
 		if (already) {
 			return res.status(403).json({
 				message:
-					'Vous avez deja repondu a ce sondage, merci de patienter la publication des resultats.',
+					"Vous avez déjà répondu à ce sondage. Merci de patienter jusqu'à la publication des résultats.",
 			});
 		}
 
@@ -223,7 +223,7 @@ exports.submitOpinion = async (req, res) => {
 		if (fraudDecision.decision === 'blocked') {
 			return res.status(fraudDecision.httpStatus || 403).json({
 				code: fraudDecision.code || 'FRAUD_BLOCKED',
-				message: fraudDecision.message || 'Vote bloque pour risque eleve.',
+				message: fraudDecision.message || 'Vote bloqué pour risque élevé.',
 			});
 		}
 
@@ -262,7 +262,7 @@ exports.submitOpinion = async (req, res) => {
 
 		await opinion.save();
 		res.status(201).json({
-			message: 'Opinion enregistree !',
+			message: 'Opinion enregistrée !',
 			hasParticipated: true,
 			canVote: false,
 			canViewResults: true,
@@ -349,7 +349,7 @@ exports.submitOpinion = async (req, res) => {
 		if (error && error.code === 11000) {
 			return res.status(403).json({
 				message:
-					'Vous avez deja repondu a ce sondage, merci de patienter la publication des resultats.',
+					"Vous avez déjà répondu à ce sondage. Merci de patienter jusqu'à la publication des résultats.",
 			});
 		}
 		console.error('surveyFlash_2.submitOpinion error:', error);
@@ -382,11 +382,11 @@ exports.getDetailedResults = async (req, res) => {
 		if (!canViewResults) {
 			if (survey.isClosed) {
 				return res.status(403).json({
-					message: 'Ce sondage est cloture. Les resultats sont reserves aux votants.',
+					message: 'Ce sondage est clôturé. Les résultats sont réservés aux votants.',
 				});
 			}
 			return res.status(403).json({
-				message: 'Votez pour acceder aux resultats en temps reel.',
+				message: 'Votez pour accéder aux résultats en temps réel.',
 			});
 		}
 
@@ -475,7 +475,7 @@ exports.getIntegrity = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const integrity = await getIntegritySnapshotForSurvey(Opinion2Flash, survey._id);
@@ -505,7 +505,7 @@ exports.getQuarantineQueue = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const limit = Math.min(
@@ -601,7 +601,7 @@ exports.restoreComment = async (req, res) => {
 		if (!canManage) {
 			return res.status(403).json({
 				code: SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
-				message: "Vous devez etre owner ou admin de l'organisation pour moderer ce commentaire.",
+				message: "Vous devez être owner ou admin de l'organisation pour modérer ce commentaire.",
 			});
 		}
 
@@ -749,7 +749,7 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const opinion = await Opinion2Flash.findOne({
@@ -849,6 +849,4 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
-
-
 

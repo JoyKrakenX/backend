@@ -85,7 +85,7 @@ exports.getMembers = async (req, res) => {
 		const organizationId = req.params.orgId;
 		const canManage = await canManageOrganizationMembers(organizationId, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces refuse.' });
+			return res.status(403).json({ message: 'Accès refusé.' });
 		}
 
 		const members = await OrganizationMember.find({ organizationId })
@@ -104,7 +104,7 @@ exports.addMember = async (req, res) => {
 		const organizationId = req.params.orgId;
 		const canManage = await canManageOrganizationMembers(organizationId, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces refuse.' });
+			return res.status(403).json({ message: 'Accès refusé.' });
 		}
 
 		const parsed = addMemberSchema.safeParse(req.body || {});
@@ -125,7 +125,7 @@ exports.addMember = async (req, res) => {
 			userId: targetUser._id,
 		}).lean();
 		if (existing) {
-			return res.status(409).json({ message: 'Utilisateur deja membre.' });
+			return res.status(409).json({ message: 'Utilisateur déjà membre.' });
 		}
 
 		const currentAdmins = await OrganizationMember.countDocuments({
@@ -185,7 +185,7 @@ exports.updateMember = async (req, res) => {
 		const memberId = req.params.memberId;
 		const canManage = await canManageOrganizationMembers(organizationId, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces refuse.' });
+			return res.status(403).json({ message: 'Accès refusé.' });
 		}
 
 		const parsed = updateMemberSchema.safeParse(req.body || {});
@@ -207,7 +207,7 @@ exports.updateMember = async (req, res) => {
 
 		if (member.role === 'owner' && parsed.data.role !== 'owner') {
 			return res.status(400).json({
-				message: 'Impossible de retrograder le proprietaire.',
+				message: 'Impossible de rétrograder le propriétaire.',
 			});
 		}
 
@@ -270,7 +270,7 @@ exports.deleteMember = async (req, res) => {
 		const memberId = req.params.memberId;
 		const canManage = await canManageOrganizationMembers(organizationId, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces refuse.' });
+			return res.status(403).json({ message: 'Accès refusé.' });
 		}
 
 		const member = await OrganizationMember.findOne({
@@ -282,7 +282,7 @@ exports.deleteMember = async (req, res) => {
 		}
 		if (member.role === 'owner') {
 			return res.status(400).json({
-				message: 'Suppression du proprietaire impossible.',
+				message: 'Suppression du propriétaire impossible.',
 			});
 		}
 		const removedUserId = member.userId;
@@ -329,7 +329,7 @@ exports.setActiveOrganization = async (req, res) => {
 			.select('_id')
 			.lean();
 		if (!membership) {
-			return res.status(403).json({ message: 'Acces refuse.' });
+			return res.status(403).json({ message: 'Accès refusé.' });
 		}
 
 		await User.updateOne(

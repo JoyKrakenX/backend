@@ -443,7 +443,7 @@ const markInvoiceFailedAndPastDue = async ({
 			level: 'warning',
 			action: 'invoice_payment',
 			code: String(reason.code || 'PAYMENT_FAILED'),
-			message: String(reason.message || 'Paiement facture en echec.'),
+			message: String(reason.message || 'Paiement de facture en échec.'),
 			organizationId: invoice.organizationId,
 			meta: {
 				invoiceId: String(invoice._id),

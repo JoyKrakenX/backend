@@ -175,13 +175,13 @@ exports.createTicket = async (req, res) => {
 
 		if (!ticket) {
 			return res.status(503).json({
-				message: 'Impossible de generer une reference ticket. Reessayez.',
+				message: 'Impossible de générer une référence de ticket. Réessayez.',
 			});
 		}
 
 		const emailDelivery = await notifyTicketCreated(ticket);
 		const response = {
-			message: 'Ticket cree avec succes.',
+			message: 'Ticket créé avec succès.',
 			ticket: {
 				id: ticket._id,
 				ticketRef: ticket.ticketRef,
@@ -194,7 +194,7 @@ exports.createTicket = async (req, res) => {
 
 		if (emailDelivery.errors.length) {
 			response.warning =
-				'Ticket cree, mais une ou plusieurs notifications email n ont pas pu etre envoyees.';
+				"Ticket créé, mais une ou plusieurs notifications email n'ont pas pu être envoyées.";
 		}
 
 		return res.status(201).json(response);
@@ -202,7 +202,7 @@ exports.createTicket = async (req, res) => {
 		console.error('support.createTicket:', error);
 		return res.status(400).json({
 			message:
-				error.message || 'Impossible de creer le ticket support pour le moment.',
+				error.message || 'Impossible de créer le ticket support pour le moment.',
 		});
 	}
 };
@@ -285,7 +285,7 @@ exports.updateTicketStatus = async (req, res) => {
 		}
 
 		return res.status(200).json({
-			message: 'Statut du ticket mis a jour.',
+			message: 'Statut du ticket mis à jour.',
 			ticket,
 		});
 	} catch (error) {
@@ -298,7 +298,7 @@ exports.replyTicket = async (req, res) => {
 	try {
 		const message = sanitizeText(req.body?.message, 4000);
 		if (!message || message.length < 2) {
-			return res.status(400).json({ message: 'Message de reponse invalide.' });
+			return res.status(400).json({ message: 'Message de réponse invalide.' });
 		}
 
 		const ticket = await SupportTicket.findById(req.params.id);
@@ -340,7 +340,7 @@ exports.replyTicket = async (req, res) => {
 		}
 
 		const response = {
-			message: 'Reponse enregistree.',
+			message: 'Réponse enregistrée.',
 			reply: ticket.replies[ticket.replies.length - 1],
 			emailDelivery,
 		};
@@ -360,7 +360,7 @@ exports.supportAttachmentDownload = async (req, res) => {
 	try {
 		const ticket = await SupportTicket.findById(req.params.id).lean();
 		if (!ticket?.attachment?.path) {
-			return res.status(404).json({ message: 'Piece jointe introuvable.' });
+			return res.status(404).json({ message: 'Pièce jointe introuvable.' });
 		}
 		return res.download(
 			path.resolve(ticket.attachment.path),

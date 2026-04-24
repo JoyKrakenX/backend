@@ -26,7 +26,7 @@ module.exports = async (req, res, next) => {
 		const isAgentRole = effectiveRole === 'support' || effectiveRole === 'admin';
 		if (!isAnySupportAdminEmail(email) || !isAgentRole) {
 			return res.status(403).json({
-				message: 'Acces reserve a l administrateur support autorise.',
+				message: "Accès réservé à l'administrateur support autorisé.",
 			});
 		}
 

@@ -49,12 +49,12 @@ const PLAN_CATALOG = Object.freeze([
 		publicOrder: 10,
 		audience: 'Decouverte',
 		description:
-			'Pour decouvrir Community sans friction avec une capacite volontairement limitee.',
+			'Pour découvrir Community sans friction avec une capacité volontairement limitée.',
 		highlights: Object.freeze([
 			'1 organisation',
 			'1 admin',
 			'3 campagnes interactives / mois',
-			'1 500 reponses / mois',
+			'1 500 réponses / mois',
 			'50 simultanes live',
 			'Branding Community conserve',
 		]),
@@ -86,11 +86,11 @@ const PLAN_CATALOG = Object.freeze([
 		publicOrder: 20,
 		audience: 'Createurs, assos, petites structures',
 		description:
-			'Pour les equipes qui animent deja une petite audience avec un besoin simple et regulier.',
+			'Pour les équipes qui animent déjà une petite audience avec un besoin simple et régulier.',
 		highlights: Object.freeze([
 			'3 admins',
 			'Sondages illimites',
-			'15 000 reponses / mois',
+			'15 000 réponses / mois',
 			'200 simultanes live',
 			'10 exports / mois',
 			'QR, chat et partage inclus',
@@ -125,16 +125,16 @@ const PLAN_CATALOG = Object.freeze([
 		isSelectable: true,
 		recommended: true,
 		publicOrder: 30,
-		audience: 'PME, agences, equipes qui animent deja une audience',
+		audience: 'PME, agences, équipes qui animent déjà une audience',
 		description:
-			'Pour faire de l engagement un levier regulier avec davantage de capacite, de collaboration et d analyse.',
+			'Pour faire de l’engagement un levier régulier avec davantage de capacité, de collaboration et d’analyse.',
 		highlights: Object.freeze([
 			'10 admins',
 			'Sondages illimites',
-			'75 000 reponses / mois',
+			'75 000 réponses / mois',
 			'1 000 simultanes live',
 			'Exports illimites',
-			'Analytics renforcees',
+			'Analytics renforcées',
 		]),
 		ctaLabel: 'Passer a Growth',
 		availableAddonCodes: Object.freeze([
@@ -166,16 +166,16 @@ const PLAN_CATALOG = Object.freeze([
 		isSelectable: true,
 		recommended: false,
 		publicOrder: 40,
-		audience: 'Marques, medias, evenements a fort trafic',
+		audience: 'Marques, médias, événements à fort trafic',
 		description:
-			'Pour les dispositifs d activation a grande echelle avec une gouvernance d equipe plus large.',
+			'Pour les dispositifs d’activation à grande échelle avec une gouvernance d’équipe plus large.',
 		highlights: Object.freeze([
 			'25 admins',
 			'Sondages illimites',
-			'300 000 reponses / mois',
+			'300 000 réponses / mois',
 			'3 000 simultanes live',
 			'Exports illimites',
-			'Gouvernance equipe etendue',
+			'Gouvernance équipe étendue',
 		]),
 		ctaLabel: 'Choisir Scale',
 		availableAddonCodes: Object.freeze([
@@ -210,7 +210,7 @@ const PLAN_CATALOG = Object.freeze([
 		audience: 'Diffuseurs, grands evenements, grands comptes',
 		description: 'Pour les besoins strategiques et les cadres contractuels sur mesure.',
 		highlights: Object.freeze([]),
-		ctaLabel: "Parler a l'equipe",
+		ctaLabel: "Parler à l'équipe",
 		availableAddonCodes: Object.freeze([]),
 		trialEligible: false,
 	},
@@ -221,7 +221,7 @@ const ADDON_CATALOG = Object.freeze([
 		code: ADDON_CODES.RESPONSE_PACK_50K,
 		displayName: 'Response Pack 50k',
 		description:
-			'Ajoutez 50 000 reponses a votre capacite mensuelle sans changer immediatement de plan.',
+			'Ajoutez 50 000 réponses à votre capacité mensuelle sans changer immédiatement de plan.',
 		priceUsd: 19,
 		kind: 'one_time',
 		durationType: 'billing_cycle',
@@ -240,13 +240,13 @@ const ADDON_CATALOG = Object.freeze([
 			PLAN_CODES.SCALE,
 		]),
 		maxQuantityPerCheckout: 10,
-		ctaLabel: 'Ajouter des reponses',
+		ctaLabel: 'Ajouter des réponses',
 	},
 	{
 		code: ADDON_CODES.ADMIN_PACK_5,
 		displayName: 'Admin Pack 5 seats',
 		description:
-			'Ajoutez 5 admins lorsque votre equipe s elargit ou que votre organisation se structure.',
+			'Ajoutez 5 admins lorsque votre équipe s’élargit ou que votre organisation se structure.',
 		priceUsd: 15,
 		kind: 'recurring',
 		durationType: 'monthly',
@@ -271,7 +271,7 @@ const ADDON_CATALOG = Object.freeze([
 		code: ADDON_CODES.LIVE_EVENT_BOOST_72H,
 		displayName: 'Live Event Boost +1 000 simultanes / 72h',
 		description:
-			'Activez un boost temporaire pour un debat, une emission, un direct ou un evenement special.',
+			'Activez un boost temporaire pour un débat, une émission, un direct ou un événement spécial.',
 		priceUsd: 49,
 		kind: 'one_time',
 		durationType: 'fixed_hours',
@@ -358,22 +358,22 @@ const BILLING_FAQ = Object.freeze([
 	{
 		question: 'Qui doit payer sur Community ?',
 		answer:
-			"L abonnement est porte par l organisation qui publie, anime et exploite les campagnes sur Community. Les participants ne paient pas.",
+			"L'abonnement est porté par l'organisation qui publie, anime et exploite les campagnes sur Community. Les participants ne paient pas.",
 	},
 	{
 		question: 'Les participants ont-ils besoin d un abonnement ?',
 		answer:
-			'Non. Les participants restent gratuits. Community facture les organisations editrices, pas les votants.',
+			'Non. Les participants restent gratuits. Community facture les organisations éditrices, pas les votants.',
 	},
 	{
 		question: "Que se passe-t-il quand j atteins la limite de mon plan ?",
 		answer:
-			'Vous ne subissez pas de depassement cache. Vous pouvez passer au plan superieur ou ajouter un pack explicite avec un cout connu a l avance.',
+			'Vous ne subissez pas de dépassement caché. Vous pouvez passer au plan supérieur ou ajouter un pack explicite avec un coût connu à l’avance.',
 	},
 	{
 		question: 'Y a-t-il un essai gratuit ?',
 		answer:
-			'Oui. Community propose Free en acces permanent, ainsi qu un essai Growth de 14 jours pour decouvrir une capacite plus intensive.',
+			'Oui. Community propose Free en accès permanent, ainsi qu’un essai Growth de 14 jours pour découvrir une capacité plus intensive.',
 	},
 	{
 		question: 'Puis-je passer au payant pendant l essai ?',
@@ -381,9 +381,9 @@ const BILLING_FAQ = Object.freeze([
 			'Oui. Si votre besoin se confirme pendant l essai, vous pouvez passer a une offre payante sans attendre la fin de la periode.',
 	},
 	{
-		question: 'Que compte Community comme reponse / participation ?',
+		question: 'Que compte Community comme réponse / participation ?',
 		answer:
-			'Une reponse correspond a une participation effectivement enregistree sur vos campagnes interactives pendant votre cycle de facturation.',
+			'Une réponse correspond à une participation effectivement enregistrée sur vos campagnes interactives pendant votre cycle de facturation.',
 	},
 	{
 		question: 'Puis-je acheter plus de capacite sans changer de plan ?',
@@ -393,15 +393,15 @@ const BILLING_FAQ = Object.freeze([
 	{
 		question: 'Dans quelle devise vais-je payer ?',
 		answer:
-			'Les offres sont presentees en USD. Le montant final est confirme avant le checkout selon la devise de reglement applicable a votre organisation.',
+			'Les offres sont présentées en USD. Le montant final est confirmé avant le checkout selon la devise de règlement applicable à votre organisation.',
 	},
 ]);
 
 const BILLING_PRINCIPLES = Object.freeze([
 	'Les participants ne paient pas.',
-	"L abonnement est porte par l organisation qui publie et anime.",
+	"L'abonnement est porté par l'organisation qui publie et anime.",
 	'Vous choisissez un plan selon votre audience, votre equipe et votre intensite live.',
-	'Si vous avez un besoin ponctuel, vous ajoutez un pack clair au lieu de subir un depassement opaque.',
+	'Si vous avez un besoin ponctuel, vous ajoutez un pack clair au lieu de subir un dépassement opaque.',
 	'Le montant final est toujours confirme avant le checkout.',
 ]);
 

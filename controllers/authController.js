@@ -1,4 +1,4 @@
-﻿/** @format */
+/** @format */
 
 const jwt = require('jsonwebtoken');
 
@@ -20,7 +20,7 @@ exports.updatePseudo = async (req, res) => {
 
 		const existing = await User.findOne({ pseudo });
 		if (existing && String(existing._id) !== String(userId)) {
-			return res.status(409).json({ message: 'Ce pseudo est deja utilise.' });
+			return res.status(409).json({ message: 'Ce pseudo est déjà utilisé.' });
 		}
 
 		const user = await User.findByIdAndUpdate(userId, { pseudo }, { new: true });
@@ -51,7 +51,7 @@ exports.completeProfile = async (req, res) => {
 		try {
 			decoded = jwt.verify(String(tempToken), process.env.JWT_TEMP_SECRET);
 		} catch (_error) {
-			return res.status(401).json({ message: 'Token temporaire invalide ou expire.' });
+			return res.status(401).json({ message: 'Token temporaire invalide ou expiré.' });
 		}
 
 		const user =
@@ -65,7 +65,7 @@ exports.completeProfile = async (req, res) => {
 		const normalizedPseudo = String(pseudo || '').trim();
 		const exists = await User.findOne({ pseudo: normalizedPseudo });
 		if (exists && String(exists._id) !== String(user._id)) {
-			return res.status(409).json({ message: 'Ce pseudo est deja utilise.' });
+			return res.status(409).json({ message: 'Ce pseudo est déjà utilisé.' });
 		}
 
 		const fraudDecision = await evaluateFraudDecision({
@@ -101,7 +101,7 @@ exports.completeProfile = async (req, res) => {
 		if (fraudDecision.decision === 'blocked') {
 			return res.status(403).json({
 				code: fraudDecision.code || 'FRAUD_BLOCKED',
-				message: fraudDecision.message || 'Inscription bloquee pour risque eleve.',
+				message: fraudDecision.message || 'Inscription bloquée pour risque élevé.',
 			});
 		}
 
@@ -129,7 +129,7 @@ exports.completeProfile = async (req, res) => {
 		);
 
 		return res.status(200).json({
-			message: 'Profil complete avec succes.',
+			message: 'Profil complété avec succès.',
 			token,
 			profileStatus: 'accepted',
 			user: {

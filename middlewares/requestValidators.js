@@ -18,7 +18,7 @@ const statusSchema = z
 				'privé',
 				'prive',
 			].includes(value),
-		{ message: 'Status de sondage invalide.' },
+		{ message: 'Statut de sondage invalide.' },
 	);
 
 const explainSchema = z.union([z.boolean(), z.string(), z.number()]).optional();

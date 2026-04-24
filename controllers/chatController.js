@@ -441,7 +441,7 @@ exports.muteMessageAuthor = async (req, res) => {
 		}
 
 		return res.status(200).json({
-			message: 'Utilisateur mute pour 10 minutes.',
+			message: 'Utilisateur mis en sourdine pour 10 minutes.',
 			messageId: String(context.chatMessage._id),
 			surveyId: String(context.chatMessage.surveyId),
 			targetUserId,
@@ -521,7 +521,7 @@ exports.deleteMessage = async (req, res, next) => {
 
 		if (chatMessage.isSystemMessage) {
 			return res.status(403).json({
-				message: 'Les messages systeme ne peuvent pas etre supprimes.',
+				message: 'Les messages système ne peuvent pas être supprimés.',
 			});
 		}
 
@@ -540,7 +540,7 @@ exports.deleteMessage = async (req, res, next) => {
 		if (!canModerate) {
 			return res.status(403).json({
 				message:
-					'Vous devez etre owner ou admin de cette organisation pour moderer le chat.',
+					'Vous devez être owner ou admin de cette organisation pour modérer le chat.',
 			});
 		}
 
@@ -581,7 +581,7 @@ exports.deleteMessage = async (req, res, next) => {
 		}
 
 		res.status(200).json({
-			message: 'Message supprime',
+			message: 'Message supprimé',
 			messageId: String(chatMessage._id),
 			surveyId: String(chatMessage.surveyId),
 			totalMessages,
@@ -776,4 +776,3 @@ exports.getChatStats = async (req, res, next) => {
 		res.status(500).json({ message: 'Erreur serveur', error: error.message });
 	}
 };
-

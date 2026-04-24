@@ -1,5 +1,6 @@
 /** @format */
 
+const crypto = require('crypto');
 const webPush = require('web-push');
 const SupportPushSubscription = require('../models/SupportPushSubscription');
 const User = require('../models/User');
@@ -29,10 +30,10 @@ let lastInitErrorLoggedAt = 0;
 const SURVEY_PUSH_TRANSLATIONS = Object.freeze({
 	fr: {
 		surveyNewTitle: 'Nouveau sondage en ligne',
-		surveyNewBody: '{creator} a publie "{theme}".',
-		surveyClosedTitle: 'Sondage cloture',
+		surveyNewBody: '{creator} a publié "{theme}".',
+		surveyClosedTitle: 'Sondage clôturé',
 		surveyClosedBody:
-			'Le sondage "{theme}" est cloture. Consultez les resultats.',
+			'Le sondage "{theme}" est clôturé. Consultez les résultats.',
 	},
 	en: {
 		surveyNewTitle: 'New survey available',
@@ -43,17 +44,52 @@ const SURVEY_PUSH_TRANSLATIONS = Object.freeze({
 	},
 	es: {
 		surveyNewTitle: 'Nueva encuesta disponible',
-		surveyNewBody: '{creator} publico "{theme}".',
+		surveyNewBody: '{creator} publicó "{theme}".',
 		surveyClosedTitle: 'Encuesta cerrada',
 		surveyClosedBody:
 			'La encuesta "{theme}" se ha cerrado. Consulta los resultados.',
 	},
 	de: {
-		surveyNewTitle: 'Neue Umfrage verfugbar',
-		surveyNewBody: '{creator} hat "{theme}" veroffentlicht.',
+		surveyNewTitle: 'Neue Umfrage verfügbar',
+		surveyNewBody: '{creator} hat "{theme}" veröffentlicht.',
 		surveyClosedTitle: 'Umfrage geschlossen',
 		surveyClosedBody:
 			'Die Umfrage "{theme}" wurde geschlossen. Sieh dir die Ergebnisse an.',
+	},
+});
+
+const SUPPORT_PUSH_TRANSLATIONS = Object.freeze({
+	fr: {
+		queueNewTitle: 'Nouveau contact support',
+		queueNewBody: 'Une nouvelle conversation est entrée dans la file support.',
+		queueReplyTitle: 'Nouveau message client',
+		queueReplyBody: 'Un client attend une réponse dans la file support.',
+		clientReplyTitle: 'Nouvelle réponse du support',
+		clientReplyBody: 'Un agent a répondu à votre message.',
+	},
+	en: {
+		queueNewTitle: 'New support contact',
+		queueNewBody: 'A new conversation entered the support queue.',
+		queueReplyTitle: 'New client message',
+		queueReplyBody: 'A client is waiting for a response in the support queue.',
+		clientReplyTitle: 'New support reply',
+		clientReplyBody: 'A support agent replied to your message.',
+	},
+	es: {
+		queueNewTitle: 'Nuevo contacto de soporte',
+		queueNewBody: 'Una nueva conversación entró en la cola de soporte.',
+		queueReplyTitle: 'Nuevo mensaje del cliente',
+		queueReplyBody: 'Un cliente espera una respuesta en la cola de soporte.',
+		clientReplyTitle: 'Nueva respuesta del soporte',
+		clientReplyBody: 'Un agente respondió a tu mensaje.',
+	},
+	de: {
+		queueNewTitle: 'Neue Support-Anfrage',
+		queueNewBody: 'Eine neue Konversation ist in der Support-Warteschlange eingegangen.',
+		queueReplyTitle: 'Neue Kundennachricht',
+		queueReplyBody: 'Ein Kunde wartet in der Support-Warteschlange auf eine Antwort.',
+		clientReplyTitle: 'Neue Support-Antwort',
+		clientReplyBody: 'Ein Support-Mitarbeiter hat auf deine Nachricht geantwortet.',
 	},
 });
 
@@ -96,6 +132,10 @@ const formatTemplate = (template, params = {}) =>
 const getSurveyStrings = (locale) =>
 	SURVEY_PUSH_TRANSLATIONS[normalizeLocale(locale)] ||
 	SURVEY_PUSH_TRANSLATIONS.fr;
+
+const getSupportStrings = (locale) =>
+	SUPPORT_PUSH_TRANSLATIONS[normalizeLocale(locale)] ||
+	SUPPORT_PUSH_TRANSLATIONS.fr;
 
 const resolveSurveyUrl = ({
 	surveyId,
@@ -302,6 +342,20 @@ const shouldSendWithDedup = (dedupKey, windowMs) => {
 	return true;
 };
 
+const normalizePushTopic = (topic) => {
+	const raw = sanitizeString(topic, 120)
+		.toLowerCase()
+		.replace(/[^a-z0-9_-]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+
+	if (!raw) return undefined;
+	if (raw.length <= 32) return raw;
+
+	const digest = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 12);
+	const prefix = raw.slice(0, Math.max(1, 32 - digest.length - 1));
+	return `${prefix}-${digest}`;
+};
+
 const normalizeSubscription = (record) => ({
 	endpoint: record.endpoint,
 	expirationTime: null,
@@ -324,7 +378,7 @@ const sendOnePush = async ({ record, payload, topic }) => {
 		await webPush.sendNotification(normalizeSubscription(record), payload, {
 			TTL: 90,
 			urgency: 'high',
-			topic,
+			topic: normalizePushTopic(topic),
 		});
 		return { sent: 1, failed: 0 };
 	} catch (error) {
@@ -536,56 +590,64 @@ const buildChannelQuery = (channel) => ({
 });
 
 const buildQueuePayload = ({
+	locale,
 	reason,
 	conversationId,
 	conversationRef,
 	status = 'waiting',
 	category = 'general',
 	lastMessageAt,
-}) =>
-	JSON.stringify({
+}) => {
+	const strings = getSupportStrings(locale);
+	const title =
+		reason === 'new_client_message' ?
+			strings.queueReplyTitle
+		:	strings.queueNewTitle;
+	const body =
+		reason === 'new_client_message' ?
+			strings.queueReplyBody
+		:	strings.queueNewBody;
+	return JSON.stringify({
 		type: 'support.queue',
 		reason: String(reason || 'new_conversation'),
 		conversationId: String(conversationId || ''),
 		conversationRef: String(conversationRef || ''),
 		status: String(status || 'waiting'),
 		category: String(category || 'general'),
-		title:
-			reason === 'new_client_message' ?
-				'Nouveau message client'
-			:	'Nouveau contact support',
-		body:
-			reason === 'new_client_message' ?
-				'Un client attend une reponse dans la file support.'
-			:	'Une nouvelle conversation est entree dans la file support.',
+		title,
+		body,
 		url: `/support-chat-admin.html?conversationId=${encodeURIComponent(
 			String(conversationId || ''),
 		)}`,
 		lastMessageAt: lastMessageAt ? new Date(lastMessageAt).toISOString() : null,
 		receivedAt: new Date().toISOString(),
 	});
+};
 
 const buildClientReplyPayload = ({
+	locale,
 	reason,
 	conversationId,
 	conversationRef,
 	status = 'assigned',
 	lastMessageAt,
-}) =>
-	JSON.stringify({
+}) => {
+	const strings = getSupportStrings(locale);
+	return JSON.stringify({
 		type: 'support.reply',
 		reason: String(reason || 'agent_reply'),
 		conversationId: String(conversationId || ''),
 		conversationRef: String(conversationRef || ''),
 		status: String(status || 'assigned'),
-		title: 'Nouvelle reponse du support',
-		body: 'Un agent a repondu a votre message.',
+		title: strings.clientReplyTitle,
+		body: strings.clientReplyBody,
 		url: `/support-chat.html?conversationId=${encodeURIComponent(
 			String(conversationId || ''),
 		)}`,
 		lastMessageAt: lastMessageAt ? new Date(lastMessageAt).toISOString() : null,
 		receivedAt: new Date().toISOString(),
 	});
+};
 
 const broadcastQueuePush = async ({
 	reason,
@@ -634,19 +696,19 @@ const broadcastQueuePush = async ({
 	}).lean();
 	if (!subscriptions.length) return { sent: 0, failed: 0, skipped: true };
 
-	const payload = buildQueuePayload({
-		reason,
-		conversationId,
-		conversationRef,
-		status,
-		category,
-		lastMessageAt,
-	});
-
-	return sendNotificationBatch({
+	return sendNotificationBatchByLocale({
 		subscriptions,
-		payload,
-		topic: `support-queue-${String(conversationId || 'all')}`,
+		topicPrefix: `support-queue-${String(conversationId || 'all')}`,
+		buildPayloadForLocale: (locale) =>
+			buildQueuePayload({
+				locale,
+				reason,
+				conversationId,
+				conversationRef,
+				status,
+				category,
+				lastMessageAt,
+			}),
 	});
 };
 
@@ -679,18 +741,18 @@ const broadcastClientReplyPush = async ({
 	}).lean();
 	if (!subscriptions.length) return { sent: 0, failed: 0, skipped: true };
 
-	const payload = buildClientReplyPayload({
-		reason,
-		conversationId,
-		conversationRef,
-		status,
-		lastMessageAt,
-	});
-
-	return sendNotificationBatch({
+	return sendNotificationBatchByLocale({
 		subscriptions,
-		payload,
-		topic: `support-reply-${String(conversationId || 'conversation')}`,
+		topicPrefix: `support-reply-${String(conversationId || 'conversation')}`,
+		buildPayloadForLocale: (locale) =>
+			buildClientReplyPayload({
+				locale,
+				reason,
+				conversationId,
+				conversationRef,
+				status,
+				lastMessageAt,
+			}),
 	});
 };
 

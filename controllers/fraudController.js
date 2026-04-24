@@ -1,4 +1,4 @@
-﻿/** @format */
+/** @format */
 
 const { startEmailOtpChallenge, verifyEmailOtpChallenge } = require('../services/fraud/emailOtpService');
 const { logFraudDecision } = require('../services/fraud/fraudDecisionLogService');
@@ -25,7 +25,7 @@ exports.startEmailChallenge = async (req, res) => {
 			return res.status(403).json({
 				ok: false,
 				code: 'TEMP_TOKEN_PROFILE_ONLY',
-				message: 'Le token temporaire est reserve au contexte profil.',
+				message: 'Le token temporaire est réservé au contexte profil.',
 			});
 		}
 		if (contextType === 'profile') {
@@ -88,7 +88,7 @@ exports.startEmailChallenge = async (req, res) => {
 		return res.status(status).json({
 			ok: false,
 			code,
-			message: 'Impossible de demarrer la verification email.',
+			message: 'Impossible de démarrer la vérification email.',
 		});
 	}
 };
@@ -138,7 +138,7 @@ exports.verifyEmailChallenge = async (req, res) => {
 		return res.status(status).json({
 			ok: false,
 			code,
-			message: 'Verification OTP invalide.',
+			message: 'Vérification OTP invalide.',
 		});
 	}
 };

@@ -1,4 +1,4 @@
-﻿/** @format */
+/** @format */
 
 const mongoose = require('mongoose');
 
@@ -135,7 +135,7 @@ exports.createSurvey = async (req, res) => {
 		if (!organizationContext.ok) {
 			return res.status(403).json({
 				code: organizationContext.code,
-				message: "Organisation active introuvable pour la creation du sondage.",
+				message: "Organisation active introuvable pour la création du sondage.",
 			});
 		}
 
@@ -210,7 +210,7 @@ exports.createSurvey = async (req, res) => {
 		});
 
 		res.status(200).json({
-			message: 'Survey saved !',
+			message: 'Sondage enregistré !',
 			surveyId: savedSurvey._id,
 			explain: savedSurvey.explain,
 			status: normalizeSurveyStatus(savedSurvey.status),
@@ -275,8 +275,8 @@ exports.getState = async (req, res) => {
 
 		if (!canViewResults) {
 			message = survey.isClosed ?
-				'Ce sondage est cloture. Les resultats sont reserves aux votants.'
-			:	'Votez pour acceder aux resultats en temps reel.';
+				'Ce sondage est clôturé. Les résultats sont réservés aux votants.'
+			:	'Votez pour accéder aux résultats en temps réel.';
 		}
 
 		return res.status(200).json({
@@ -306,12 +306,12 @@ exports.submitOpinion = async (req, res) => {
 		if (survey.explain === false) {
 			return res.status(400).json({
 				message:
-					'Ce sondage est en mode Flash. Utilisez les endpoints Flash dÃ©diÃ©s.',
+					'Ce sondage est en mode Flash. Utilisez les endpoints Flash dédiés.',
 			});
 		}
 		if (survey.isClosed) {
 			return res.status(403).json({
-				message: 'Le sondage est clÃ´turÃ©, vous ne pouvez plus y rÃ©pondre.',
+				message: 'Le sondage est clôturé, vous ne pouvez plus y répondre.',
 			});
 		}
 		const organizationId = await resolveSurveyOrganizationId(survey);
@@ -335,12 +335,12 @@ exports.submitOpinion = async (req, res) => {
 		if (existingOpinion) {
 			return res.status(403).json({
 				message:
-					'Vous avez dÃ©jÃ  rÃ©pondu Ã  ce sondage, merci de patienter la publication des rÃ©sultats.',
+					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
 			});
 		}
 
 		if (typeof req.body.answer !== 'boolean') {
-			return res.status(400).json({ message: 'RÃ©ponse invalide.' });
+			return res.status(400).json({ message: 'Réponse invalide.' });
 		}
 
 		if (!req.body.reason || req.body.reason.trim() === '') {
@@ -393,7 +393,7 @@ exports.submitOpinion = async (req, res) => {
 		if (fraudDecision.decision === 'blocked') {
 			return res.status(fraudDecision.httpStatus || 403).json({
 				code: fraudDecision.code || 'FRAUD_BLOCKED',
-				message: fraudDecision.message || 'Vote bloque pour risque eleve.',
+				message: fraudDecision.message || 'Vote bloqué pour risque élevé.',
 			});
 		}
 
@@ -419,7 +419,7 @@ exports.submitOpinion = async (req, res) => {
 
 		await opinion.save();
 		res.status(201).json({
-			message: 'Opinion enregistree !',
+			message: 'Opinion enregistrée !',
 			hasParticipated: true,
 			canVote: false,
 			canViewResults: true,
@@ -523,11 +523,11 @@ exports.getDetailedStats = async (req, res) => {
 		if (!canViewResults) {
 			if (survey.isClosed) {
 				return res.status(403).json({
-					message: 'Ce sondage est cloture. Les resultats sont reserves aux votants.',
+					message: 'Ce sondage est clôturé. Les résultats sont réservés aux votants.',
 				});
 			}
 			return res.status(403).json({
-				message: 'Votez pour acceder aux resultats en temps reel.',
+				message: 'Votez pour accéder aux résultats en temps réel.',
 			});
 		}
 
@@ -613,11 +613,11 @@ exports.closeSurvey = async (req, res) => {
 		}
 
 		if (survey.userId.toString() !== req.userId.toString()) {
-			return res.status(403).json({ message: 'Non autorisÃ©' });
+			return res.status(403).json({ message: 'Non autorisé' });
 		}
 
 		if (survey.isClosed) {
-			return res.status(400).json({ message: 'Le sondage est dÃ©jÃ  clÃ´turÃ©' });
+			return res.status(400).json({ message: 'Le sondage est déjà clôturé....' });
 		}
 
 		survey.isClosed = true;
@@ -692,7 +692,7 @@ exports.closeSurvey = async (req, res) => {
 			reason: 'survey-closed',
 		});
 
-		res.status(200).json({ message: 'Sondage clÃ´turÃ© avec succÃ¨s' });
+		res.status(200).json({ message: 'Sondage clôturé avec succès....' });
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ error: 'Erreur serveur' });
@@ -710,7 +710,7 @@ exports.getIntegrity = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const OpinionModel = getBinaryOpinionModel(survey);
@@ -742,7 +742,7 @@ exports.getQuarantineQueue = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const limit = Math.min(
@@ -911,7 +911,7 @@ exports.restoreComment = async (req, res) => {
 		if (!canManage) {
 			return res.status(403).json({
 				code: SURVEY_COMMENT_ERROR_CODES.MODERATION_FORBIDDEN,
-				message: "Vous devez etre owner ou admin de l'organisation pour moderer ce commentaire.",
+				message: "Vous devez être owner ou admin de l'organisation pour modérer ce commentaire.",
 			});
 		}
 
@@ -963,7 +963,7 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 
 		const canManage = await canManageSurveyByOrganization(survey, req.userId);
 		if (!canManage) {
-			return res.status(403).json({ message: 'Acces admin requis.' });
+			return res.status(403).json({ message: 'Accès admin requis.' });
 		}
 
 		const OpinionModel = getBinaryOpinionModel(survey);

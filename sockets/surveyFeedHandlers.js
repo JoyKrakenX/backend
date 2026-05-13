@@ -80,6 +80,7 @@ const buildSurveyFeedPayload = (payload = {}) => {
 		endedAt: toIsoOrNull(payload.endedAt),
 		occurredAt: toIsoOrNull(payload.occurredAt) || new Date().toISOString(),
 		totalOpinions,
+		creatorName: String(payload.creatorName || '').trim() || null,
 	};
 };
 

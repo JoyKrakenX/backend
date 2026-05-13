@@ -2,6 +2,7 @@
 
 const Survey = require('../models/Survey');
 const Survey_2 = require('../models/Survey_2');
+const User = require('../models/User');
 const Opinion = require('../models/Opinion');
 const Opinion_2 = require('../models/Opinion_2');
 const Opinion_Flash = require('../models/Opinion_Flash');
@@ -53,6 +54,36 @@ const distinctSurveyParticipation = async (
 	});
 };
 
+const getCreatorIds = (...surveyGroups) =>
+	[
+		...new Set(
+			surveyGroups
+				.flat()
+				.map((survey) => String(survey?.userId || '').trim())
+				.filter(Boolean),
+		),
+	];
+
+const getCreatorsById = async (surveysBinary = [], surveysMultiple = []) => {
+	const creatorIds = getCreatorIds(surveysBinary, surveysMultiple);
+	if (!creatorIds.length) return new Map();
+
+	const users = await User.find({ _id: { $in: creatorIds } })
+		.select('_id pseudo name email')
+		.lean();
+
+	return new Map(users.map((user) => [String(user._id), user]));
+};
+
+const resolveCreatorName = (survey, creatorsById) => {
+	const creator = creatorsById.get(String(survey?.userId || '').trim());
+	const emailFallback = String(creator?.email || '').split('@')[0];
+	const name = String(
+		creator?.pseudo || creator?.name || emailFallback || 'Administrateur',
+	).trim();
+	return name || 'Administrateur';
+};
+
 exports.getAllSurveys = async (req, res, next) => {
 	try {
 		const userId = req.userId || null;
@@ -73,6 +104,7 @@ exports.getAllSurveys = async (req, res, next) => {
 
 		const surveysBinary = settledValueOr(settled[0], []);
 		const surveysMultiple = settledValueOr(settled[1], []);
+		const creatorsById = await getCreatorsById(surveysBinary, surveysMultiple);
 
 		settled.forEach((entry, index) => {
 			if (entry.status === 'rejected') {
@@ -143,6 +175,7 @@ exports.getAllSurveys = async (req, res, next) => {
 			...survey,
 			status: normalizeSurveyStatus(survey.status),
 			type: 'binary',
+			creatorName: resolveCreatorName(survey, creatorsById),
 			totalVotes:
 				survey.explain === false ?
 					binaryFlashCounts.get(String(survey._id)) || 0
@@ -161,6 +194,7 @@ exports.getAllSurveys = async (req, res, next) => {
 			...survey,
 			status: normalizeSurveyStatus(survey.status),
 			type: 'multiple',
+			creatorName: resolveCreatorName(survey, creatorsById),
 			totalVotes:
 				survey.explain === false ?
 					multipleFlashCounts.get(String(survey._id)) || 0

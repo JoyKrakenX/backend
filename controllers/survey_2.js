@@ -250,6 +250,7 @@ exports.createSurvey = async (req, res) => {
 			isClosed: Boolean(savedSurvey.isClosed),
 			ownerUserId: savedSurvey.userId,
 			organizationId: savedSurvey.organizationId || null,
+			creatorName: req.userPseudo || 'Administrateur',
 			createdAt: savedSurvey.createdAt,
 			endedAt: savedSurvey.endedAt,
 		});

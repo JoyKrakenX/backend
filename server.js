@@ -32,8 +32,26 @@ app.set('port', port);
 
 const server = http.createServer(app);
 
+const parseAllowedOrigins = () =>
+	String(process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '')
+		.split(',')
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+
+const socketAllowedOrigins = parseAllowedOrigins();
+
 const io = new Server(server, {
-	cors: { origin: '*' },
+	cors: {
+		origin: (origin, callback) => {
+			if (!origin) return callback(null, true);
+			if (process.env.NODE_ENV !== 'production') return callback(null, true);
+			if (!socketAllowedOrigins.length || socketAllowedOrigins.includes(origin)) {
+				return callback(null, true);
+			}
+			return callback(new Error('Socket.IO origin non autorisée'));
+		},
+		methods: ['GET', 'POST'],
+	},
 });
 app.set('io', io);
 

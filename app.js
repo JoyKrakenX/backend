@@ -85,7 +85,7 @@ app.use(
 			if (!allowedOrigins.length || allowedOrigins.includes(origin)) {
 				return callback(null, true);
 			}
-			return callback(new Error('CORS origin non autorisee'));
+			return callback(new Error('CORS origin non autorisée'));
 		},
 		methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 		allowedHeaders: [
@@ -116,6 +116,7 @@ app.use(
 					'data:',
 					'https://ui-avatars.com',
 					'https://*.googleusercontent.com',
+					'https://images.unsplash.com',
 				],
 			},
 		},

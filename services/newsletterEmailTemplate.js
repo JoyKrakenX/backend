@@ -5,7 +5,7 @@ const SUPPORTED_LOCALES = new Set(['fr', 'en', 'es', 'de']);
 
 const escapeHtml = (value) =>
 	String(value ?? '')
-		.replace(/&/g, '&')
+		.replace(/&/g, '&amp;')
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;')
 		.replace(/"/g, '&quot;')
@@ -20,13 +20,13 @@ const CONTENT = {
 	fr: {
 		subject: 'Confirmez votre inscription à la newsletter Community',
 		preheader:
-			'Confirmez votre abonnement en un clic pour recevoir les nouveautes Community.',
+			'Confirmez votre abonnement en un clic pour recevoir les nouveautés Community.',
 		title: 'Confirmez votre inscription',
 		lead:
 			'Merci pour votre inscription à la newsletter Community. Un clic suffit pour activer votre abonnement.',
 		benefitsTitle: 'Ce que vous recevrez',
 		benefits: [
-			'Les nouvelles fonctionnalites en avant-premiere',
+			'Les nouvelles fonctionnalités en avant-première',
 			'Des annonces produit importantes',
 			'Des conseils pour mieux utiliser Community',
 		],
@@ -34,8 +34,8 @@ const CONTENT = {
 		fallbackTitle: 'Le bouton ne fonctionne pas ?',
 		fallbackBody: 'Copiez-collez ce lien dans votre navigateur :',
 		security:
-			"Si vous n'etes pas a l'origine de cette demande, ignorez simplement cet email.",
-		unsubscribe: 'Se desinscrire',
+			"Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email.",
+		unsubscribe: 'Se désinscrire',
 		copyright: 'Community. Tous droits réservés.',
 	},
 	en: {

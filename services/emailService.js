@@ -58,6 +58,25 @@ const resolveFrom = (from) => {
 	};
 };
 
+const resolveReplyTo = () => {
+	const replyToEmail = String(
+		process.env.MAILJET_REPLY_TO_EMAIL || process.env.SUPPORT_INBOX_EMAIL || '',
+	).trim();
+	if (!replyToEmail) return null;
+
+	const replyToName = String(
+		process.env.MAILJET_REPLY_TO_NAME ||
+			process.env.SUPPORT_INBOX_NAME ||
+			process.env.MAILJET_FROM_NAME ||
+			'Community Support',
+	).trim();
+
+	return {
+		Email: replyToEmail,
+		Name: replyToName || replyToEmail,
+	};
+};
+
 const sendEmail = async ({
 	to,
 	subject,
@@ -106,6 +125,8 @@ const sendEmail = async ({
 		To: [{ Email: String(to || '').trim() }],
 		Subject: String(subject || '').trim(),
 	};
+	const replyToIdentity = resolveReplyTo();
+	if (replyToIdentity) message.ReplyTo = replyToIdentity;
 	if (textPart) message.TextPart = textPart;
 	if (htmlPart) message.HTMLPart = htmlPart;
 	if (normalizedHeaders && Object.keys(normalizedHeaders).length > 0) {

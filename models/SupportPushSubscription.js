@@ -7,6 +7,7 @@ const PUSH_CHANNELS = [
 	'support_reply',
 	'survey_new',
 	'survey_closed',
+	'chat_reply',
 ];
 
 const supportPushSubscriptionSchema = new mongoose.Schema(

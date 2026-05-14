@@ -14,6 +14,7 @@ const CHANNELS = Object.freeze({
 	SUPPORT_REPLY: 'support_reply',
 	SURVEY_NEW: 'survey_new',
 	SURVEY_CLOSED: 'survey_closed',
+	CHAT_REPLY: 'chat_reply',
 });
 
 const ALLOWED_CHANNELS = new Set(Object.values(CHANNELS));
@@ -22,6 +23,7 @@ const SUPPORT_ROLES = new Set(['support', 'admin']);
 const QUEUE_DEDUP_WINDOW_MS = 15_000;
 const CLIENT_REPLY_DEDUP_WINDOW_MS = 60_000;
 const SURVEY_EVENT_DEDUP_WINDOW_MS = 20_000;
+const CHAT_REPLY_DEDUP_WINDOW_MS = 20_000;
 const pushDedupCache = new Map();
 
 let vapidInitialized = false;
@@ -93,6 +95,25 @@ const SUPPORT_PUSH_TRANSLATIONS = Object.freeze({
 	},
 });
 
+const CHAT_PUSH_TRANSLATIONS = Object.freeze({
+	fr: {
+		replyTitle: 'Réponse dans le chat',
+		replyBody: '{fromUser} vous a répondu : {message}',
+	},
+	en: {
+		replyTitle: 'Chat reply',
+		replyBody: '{fromUser} replied to you: {message}',
+	},
+	es: {
+		replyTitle: 'Respuesta en el chat',
+		replyBody: '{fromUser} te respondió: {message}',
+	},
+	de: {
+		replyTitle: 'Antwort im Chat',
+		replyBody: '{fromUser} hat dir geantwortet: {message}',
+	},
+});
+
 const canSendPush = () =>
 	String(process.env.PUSH_ENABLED || '').toLowerCase() === 'true' &&
 	Boolean(
@@ -137,6 +158,16 @@ const getSupportStrings = (locale) =>
 	SUPPORT_PUSH_TRANSLATIONS[normalizeLocale(locale)] ||
 	SUPPORT_PUSH_TRANSLATIONS.fr;
 
+const getChatStrings = (locale) =>
+	CHAT_PUSH_TRANSLATIONS[normalizeLocale(locale)] ||
+	CHAT_PUSH_TRANSLATIONS.fr;
+
+const truncatePushText = (value, max = 120) => {
+	const text = String(value || '').replace(/\s+/g, ' ').trim();
+	if (text.length <= max) return text;
+	return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+};
+
 const resolveSurveyUrl = ({
 	surveyId,
 	surveyType,
@@ -164,6 +195,25 @@ const resolveSurveyUrl = ({
 	return explain === false ?
 			`/survey-flash-binary.html?id=${encodeURIComponent(normalizedId)}`
 		:	`/survey.html?id=${encodeURIComponent(normalizedId)}`;
+};
+
+const resolveChatroomUrl = ({ surveyId, surveyType = 'binary', messageId }) => {
+	const normalizedId = String(surveyId || '').trim();
+	if (!normalizedId) return '/browse-surveys.html';
+
+	const normalizedType =
+		String(surveyType || 'binary').toLowerCase() === 'multiple' ?
+			'multiple'
+		:	'binary';
+	const params = new URLSearchParams({
+		surveyId: normalizedId,
+		type: normalizedType,
+	});
+	const normalizedMessageId = String(messageId || '').trim();
+	if (normalizedMessageId) {
+		params.set('messageId', normalizedMessageId);
+	}
+	return `/chatroom.html?${params.toString()}`;
 };
 
 const buildSurveyNewPayload = ({
@@ -649,6 +699,43 @@ const buildClientReplyPayload = ({
 	});
 };
 
+const buildChatReplyPayload = ({
+	locale,
+	targetUserId,
+	fromUser,
+	message,
+	messageId,
+	surveyId,
+	surveyType = 'binary',
+}) => {
+	const strings = getChatStrings(locale);
+	const safeFromUser = sanitizeString(fromUser, 80) || 'Utilisateur';
+	const safeMessage = truncatePushText(message, 120) || 'Nouveau message.';
+	const safeMessageId = String(messageId || '').trim();
+
+	return JSON.stringify({
+		type: 'chat.reply',
+		reason: 'message_reply',
+		targetUserId: String(targetUserId || ''),
+		fromUser: safeFromUser,
+		message: safeMessage,
+		messageId: safeMessageId,
+		surveyId: String(surveyId || ''),
+		surveyType: String(surveyType || 'binary'),
+		title: strings.replyTitle,
+		body: formatTemplate(strings.replyBody, {
+			fromUser: safeFromUser,
+			message: safeMessage,
+		}),
+		url: resolveChatroomUrl({
+			surveyId,
+			surveyType,
+			messageId: safeMessageId,
+		}),
+		receivedAt: new Date().toISOString(),
+	});
+};
+
 const broadcastQueuePush = async ({
 	reason,
 	conversationId,
@@ -854,6 +941,54 @@ const broadcastSurveyClosedPush = async ({
 	});
 };
 
+const broadcastChatReplyPush = async ({
+	targetUserId,
+	fromUser,
+	message,
+	messageId,
+	surveyId,
+	surveyType = 'binary',
+}) => {
+	if (!canSendPush()) return { sent: 0, failed: 0, skipped: true };
+	if (!targetUserId || !messageId || !surveyId) {
+		return { sent: 0, failed: 0, skipped: true };
+	}
+
+	const dedupKey = `chat:reply:${String(targetUserId)}:${String(messageId)}`;
+	if (!shouldSendWithDedup(dedupKey, CHAT_REPLY_DEDUP_WINDOW_MS)) {
+		return { sent: 0, failed: 0, skipped: true, dedup: true };
+	}
+
+	ensurePushReady();
+
+	const subscriptions = await SupportPushSubscription.find({
+		$and: [
+			{ userId: targetUserId },
+			buildChannelQuery(CHANNELS.CHAT_REPLY),
+			{ enabled: true },
+		],
+	}).lean();
+
+	if (!subscriptions.length) return { sent: 0, failed: 0, skipped: true };
+
+	return sendNotificationBatchByLocale({
+		subscriptions,
+		topicPrefix: `chat-reply-${String(surveyId || 'survey')}-${String(
+			messageId || 'message',
+		)}`,
+		buildPayloadForLocale: (locale) =>
+			buildChatReplyPayload({
+				locale,
+				targetUserId,
+				fromUser,
+				message,
+				messageId,
+				surveyId,
+				surveyType,
+			}),
+	});
+};
+
 console.log(`[SupportPush] ready=${canSendPush() ? 'true' : 'false'}`);
 
 module.exports = {
@@ -869,6 +1004,7 @@ module.exports = {
 	broadcastClientReplyPush,
 	broadcastSurveyNewPush,
 	broadcastSurveyClosedPush,
+	broadcastChatReplyPush,
 	getDefaultChannelForRole,
 	isAllowedChannelForRole,
 	normalizeLocale,

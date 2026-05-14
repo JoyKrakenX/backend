@@ -36,6 +36,7 @@ const {
 	formatChatMessagePayload,
 	normalizeObjectId,
 } = require('../services/chatMessagePayloadService');
+const { broadcastChatReplyPush } = require('../services/supportPushService');
 const {
 	refreshAndEmitBroadcastSnapshot,
 	emitBroadcastStatus,
@@ -385,16 +386,30 @@ exports.sendMessage = async (req, res, next) => {
 		});
 		const replyTargetUserId = normalizeObjectId(replyToInfo?.userId);
 		if (replyTargetUserId && replyTargetUserId !== String(req.userId)) {
+			const replyMessageId = String(formattedMessage.id || chatMessage._id);
 			io.to(buildSurveyUserRoomName(surveyId, replyTargetUserId)).emit(
 				'replyNotification',
 				{
 					targetUserId: replyTargetUserId,
 					fromUser: req.userPseudo || 'Utilisateur',
 					message: message.trim(),
-					messageId: String(formattedMessage.id || chatMessage._id),
+					messageId: replyMessageId,
 					surveyId: String(surveyId),
 				},
 			);
+			broadcastChatReplyPush({
+				targetUserId: replyTargetUserId,
+				fromUser: req.userPseudo || 'Utilisateur',
+				message: message.trim(),
+				messageId: replyMessageId,
+				surveyId: String(surveyId),
+				surveyType: type === 'multiple' ? 'multiple' : 'binary',
+			}).catch((pushError) => {
+				console.error(
+					'[ChatPush] reply push failed:',
+					pushError?.message || pushError,
+				);
+			});
 		}
 
 		res.status(201).json({

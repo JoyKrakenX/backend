@@ -38,6 +38,7 @@ const {
 	formatChatMessagePayload,
 	normalizeObjectId,
 } = require('../services/chatMessagePayloadService');
+const { broadcastChatReplyPush } = require('../services/supportPushService');
 const { emitBroadcastStatus } = require('../services/broadcastRealtimeService');
 const {
 	canManageSurveyByOrganization,
@@ -747,16 +748,30 @@ module.exports = (io) => {
 					replyTargetUserId &&
 					replyTargetUserId !== String(authUser.id)
 				) {
+					const replyMessageId = String(formattedMessage.id || chatMessage._id);
 					io.to(buildSurveyUserRoomName(surveyId, replyTargetUserId)).emit(
 						'replyNotification',
 						{
 							targetUserId: replyTargetUserId,
 							fromUser: authUser.pseudo || 'Utilisateur',
 							message,
-							messageId: String(formattedMessage.id || chatMessage._id),
+							messageId: replyMessageId,
 							surveyId: String(surveyId),
 						},
 					);
+					broadcastChatReplyPush({
+						targetUserId: replyTargetUserId,
+						fromUser: authUser.pseudo || 'Utilisateur',
+						message,
+						messageId: replyMessageId,
+						surveyId: String(surveyId),
+						surveyType: type === 'multiple' ? 'multiple' : 'binary',
+					}).catch((pushError) => {
+						console.error(
+							'[ChatPush] reply push failed:',
+							pushError?.message || pushError,
+						);
+					});
 				}
 			} catch (error) {
 				console.error('chat.sendMessage error:', error);

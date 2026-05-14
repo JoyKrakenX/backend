@@ -181,6 +181,7 @@ const sendConfirmationEmail = async ({
 		subject: template.subject,
 		text: template.text,
 		html: template.html,
+		inlinedAttachments: template.inlinedAttachments,
 		headers: {
 			'List-Unsubscribe': `<${unsubscribeLink}>`,
 			'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',

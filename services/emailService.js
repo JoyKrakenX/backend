@@ -84,6 +84,7 @@ const sendEmail = async ({
 	text,
 	from,
 	headers,
+	inlinedAttachments,
 	requireConfigured = false,
 }) => {
 	const activeClient = getMailjetClient();
@@ -131,6 +132,25 @@ const sendEmail = async ({
 	if (htmlPart) message.HTMLPart = htmlPart;
 	if (normalizedHeaders && Object.keys(normalizedHeaders).length > 0) {
 		message.Headers = normalizedHeaders;
+	}
+	if (Array.isArray(inlinedAttachments) && inlinedAttachments.length > 0) {
+		message.InlinedAttachments = inlinedAttachments
+			.map((attachment) => ({
+				ContentType: String(attachment?.contentType || '').trim(),
+				Filename: String(attachment?.filename || '').trim(),
+				Base64Content: String(attachment?.base64Content || '').trim(),
+				ContentID: String(attachment?.contentId || '').trim(),
+			}))
+			.filter(
+				(attachment) =>
+					attachment.ContentType &&
+					attachment.Filename &&
+					attachment.Base64Content &&
+					attachment.ContentID,
+			);
+		if (!message.InlinedAttachments.length) {
+			delete message.InlinedAttachments;
+		}
 	}
 
 	try {

@@ -1,7 +1,22 @@
 /** @format */
 
+const fs = require('fs');
+const path = require('path');
+
 const DEFAULT_LOCALE = 'fr';
 const SUPPORTED_LOCALES = new Set(['fr', 'en', 'es', 'de']);
+const BRAND = Object.freeze({
+	primary: '#6366f1',
+	primaryDark: '#4f46e5',
+	secondary: '#8b5cf6',
+	ink: '#0f172a',
+	muted: '#475569',
+	panel: '#f8fafc',
+	soft: '#eef2ff',
+	border: '#e2e8f0',
+});
+const INLINE_LOGO_CONTENT_ID = 'community-logo';
+const LOGO_PATH = path.join(__dirname, '../../frontend/assets/logo.png');
 
 const escapeHtml = (value) =>
 	String(value ?? '')
@@ -124,6 +139,20 @@ const buildTextBody = ({ content, confirmLink, unsubscribeLink }) => {
 	].join('\n');
 };
 
+const buildInlineLogoAttachment = () => {
+	try {
+		const logoBuffer = fs.readFileSync(LOGO_PATH);
+		return {
+			contentType: 'image/png',
+			filename: 'community-logo.png',
+			base64Content: logoBuffer.toString('base64'),
+			contentId: INLINE_LOGO_CONTENT_ID,
+		};
+	} catch (_error) {
+		return null;
+	}
+};
+
 const buildNewsletterConfirmationEmail = ({
 	locale,
 	confirmLink,
@@ -135,6 +164,10 @@ const buildNewsletterConfirmationEmail = ({
 	const safeConfirmLink = escapeHtml(confirmLink);
 	const safeUnsubscribeLink = escapeHtml(unsubscribeLink);
 	const safeLogoUrl = escapeHtml(`${String(frontendBase || '').replace(/\/+$/, '')}/assets/logo.png`);
+	const inlineLogoAttachment = buildInlineLogoAttachment();
+	const safeLogoSrc = inlineLogoAttachment ?
+		`cid:${INLINE_LOGO_CONTENT_ID}`
+	:	safeLogoUrl;
 	const year = new Date().getFullYear();
 	const benefitsHtml = content.benefits
 		.map((item) => `<li style="margin: 0 0 8px 0;">${escapeHtml(item)}</li>`)
@@ -147,24 +180,30 @@ const buildNewsletterConfirmationEmail = ({
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>${escapeHtml(content.subject)}</title>
   </head>
-  <body style="margin:0;padding:0;background:#f3f7fb;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;">
+  <body style="margin:0;padding:0;background:#f3f4ff;font-family:Segoe UI,Arial,sans-serif;color:${BRAND.ink};">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
       ${escapeHtml(content.preheader)}
     </div>
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="padding:24px 12px;background:#f3f7fb;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="padding:24px 12px;background:#f3f4ff;">
       <tr>
         <td align="center">
-          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:640px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:640px;background:#ffffff;border:1px solid ${BRAND.border};border-radius:18px;overflow:hidden;">
             <tr>
-              <td style="padding:24px 28px 14px 28px;border-bottom:2px solid #0f766e;background:#f8fafc;">
+              <td style="padding:24px 28px 16px 28px;border-bottom:3px solid ${BRAND.primary};background:${BRAND.panel};">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td style="vertical-align:middle;">
-                      <img src="${safeLogoUrl}" width="42" height="42" alt="Community" style="display:block;border:0;outline:none;text-decoration:none;" />
+                    <td width="56" style="vertical-align:middle;">
+                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="56">
+                        <tr>
+                          <td align="center" valign="middle" bgcolor="${BRAND.ink}" style="width:56px;height:56px;border-radius:16px;background:${BRAND.ink};">
+                            <img src="${safeLogoSrc}" width="48" height="48" alt="Community" style="display:block;width:48px;height:48px;border:0;outline:none;text-decoration:none;border-radius:12px;" />
+                          </td>
+                        </tr>
+                      </table>
                     </td>
-                    <td style="padding-left:12px;vertical-align:middle;">
-                      <div style="font-size:22px;font-weight:700;line-height:1.2;color:#0f172a;">Community</div>
-                      <div style="font-size:13px;color:#334155;">${escapeHtml(content.title)}</div>
+                    <td style="padding-left:14px;vertical-align:middle;">
+                      <div style="font-size:23px;font-weight:800;line-height:1.2;color:${BRAND.ink};letter-spacing:-0.01em;">Community</div>
+                      <div style="font-size:13px;color:${BRAND.muted};">${escapeHtml(content.title)}</div>
                     </td>
                   </tr>
                 </table>
@@ -172,32 +211,32 @@ const buildNewsletterConfirmationEmail = ({
             </tr>
             <tr>
               <td style="padding:26px 28px 10px 28px;">
-                <h1 style="margin:0 0 14px 0;font-size:24px;line-height:1.25;color:#0f172a;text-decoration:underline;text-decoration-color:#0f766e;text-decoration-thickness:2px;">
+                <h1 style="margin:0 0 14px 0;font-size:24px;line-height:1.25;color:${BRAND.ink};text-decoration:underline;text-decoration-color:${BRAND.primary};text-decoration-thickness:2px;">
                   ${escapeHtml(content.title)}
                 </h1>
                 <p style="margin:0 0 16px 0;font-size:16px;line-height:1.6;color:#1e293b;">${escapeHtml(content.lead)}</p>
-                <p style="margin:0 0 10px 0;font-size:15px;line-height:1.5;color:#0f172a;font-weight:600;">${escapeHtml(content.benefitsTitle)}</p>
+                <p style="margin:0 0 10px 0;font-size:15px;line-height:1.5;color:${BRAND.ink};font-weight:700;">${escapeHtml(content.benefitsTitle)}</p>
                 <ul style="margin:0 0 20px 20px;padding:0;font-size:15px;line-height:1.5;color:#334155;">
                   ${benefitsHtml}
                 </ul>
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px 0;">
                   <tr>
-                    <td align="center" bgcolor="#0f766e" style="border-radius:999px;">
+                    <td align="center" bgcolor="${BRAND.primary}" style="border-radius:999px;background:${BRAND.primary};box-shadow:0 8px 20px rgba(99,102,241,0.24);">
                       <a href="${safeConfirmLink}" style="display:inline-block;padding:12px 24px;font-size:15px;font-weight:700;line-height:1;color:#ffffff;text-decoration:none;">
                         ${escapeHtml(content.cta)}
                       </a>
                     </td>
                   </tr>
                 </table>
-                <p style="margin:0 0 6px 0;font-size:13px;line-height:1.5;color:#475569;"><strong>${escapeHtml(content.fallbackTitle)}</strong> ${escapeHtml(content.fallbackBody)}</p>
-                <p style="margin:0 0 14px 0;font-size:13px;line-height:1.5;word-break:break-all;"><a href="${safeConfirmLink}" style="color:#0f766e;text-decoration:underline;">${safeConfirmLink}</a></p>
-                <p style="margin:0 0 14px 0;font-size:13px;line-height:1.5;color:#475569;">${escapeHtml(content.security)}</p>
+                <p style="margin:0 0 6px 0;font-size:13px;line-height:1.5;color:${BRAND.muted};"><strong>${escapeHtml(content.fallbackTitle)}</strong> ${escapeHtml(content.fallbackBody)}</p>
+                <p style="margin:0 0 14px 0;font-size:13px;line-height:1.5;word-break:break-all;"><a href="${safeConfirmLink}" style="color:${BRAND.primaryDark};text-decoration:underline;">${safeConfirmLink}</a></p>
+                <p style="margin:0 0 14px 0;font-size:13px;line-height:1.5;color:${BRAND.muted};">${escapeHtml(content.security)}</p>
               </td>
             </tr>
             <tr>
-              <td style="padding:16px 28px 24px 28px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-                <p style="margin:0 0 6px 0;font-size:13px;color:#475569;">
-                  <a href="${safeUnsubscribeLink}" style="color:#0f766e;text-decoration:underline;">${escapeHtml(content.unsubscribe)}</a>
+              <td style="padding:16px 28px 24px 28px;background:${BRAND.panel};border-top:1px solid ${BRAND.border};">
+                <p style="margin:0 0 6px 0;font-size:13px;color:${BRAND.muted};">
+                  <a href="${safeUnsubscribeLink}" style="color:${BRAND.primaryDark};text-decoration:underline;">${escapeHtml(content.unsubscribe)}</a>
                 </p>
                 <p style="margin:0;font-size:12px;color:#64748b;">&copy; ${year} ${escapeHtml(content.copyright)}</p>
               </td>
@@ -213,6 +252,7 @@ const buildNewsletterConfirmationEmail = ({
 		subject: content.subject,
 		text: buildTextBody({ content, confirmLink, unsubscribeLink }),
 		html,
+		inlinedAttachments: [inlineLogoAttachment].filter(Boolean),
 	};
 };
 

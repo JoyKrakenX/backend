@@ -24,6 +24,27 @@ const statusSchema = z
 const explainSchema = z.union([z.boolean(), z.string(), z.number()]).optional();
 const legacyMultipleOptionSchema = z.string().trim().max(220).nullish();
 const localeSchema = z.enum(['fr', 'en', 'es', 'de']).optional();
+const deviceIntegritySchema = z
+	.object({
+		version: z.number().int().min(1).max(5).optional(),
+		challengeId: z.string().trim().min(8).max(120).optional(),
+		createdAt: z.string().trim().max(80).optional(),
+		signalsVersion: z.string().trim().max(80).optional(),
+		publicKey: z.record(z.string(), z.any()).optional(),
+		signedPayload: z.string().trim().max(60000).optional(),
+		signature: z.string().trim().max(20000).optional(),
+		fingerprint: z
+			.object({
+				visitorId: z.string().trim().max(500).optional(),
+				confidence: z.number().min(0).max(100).optional(),
+				signals: z.record(z.string(), z.any()).optional(),
+				components: z.record(z.string(), z.any()).optional(),
+			})
+			.passthrough()
+			.optional(),
+	})
+	.passthrough()
+	.optional();
 
 const createBinarySurveySchema = z.object({
 	theme: z.string().trim().min(2).max(180),
@@ -70,6 +91,7 @@ const binaryVoteSchema = z.object({
 	answer: z.boolean(),
 	reason: z.string().trim().max(2000).optional(),
 	turnstileToken: z.string().trim().min(1).max(4096).optional(),
+	deviceIntegrity: deviceIntegritySchema,
 	locale: localeSchema,
 });
 
@@ -77,6 +99,7 @@ const multipleVoteSchema = z.object({
 	choice: z.string().trim().min(1).max(280),
 	reason: z.string().trim().max(2000).optional(),
 	turnstileToken: z.string().trim().min(1).max(4096).optional(),
+	deviceIntegrity: deviceIntegritySchema,
 	locale: localeSchema,
 });
 

@@ -43,6 +43,7 @@ module.exports = (req, res, next) => {
 	const unsignedCookieValue = String(req.cookies?.[DEVICE_COOKIE_NAME] || '').trim();
 	let deviceId = hasCookieSecret ? signedCookieValue : unsignedCookieValue;
 	let shouldPersistDeviceCookie = false;
+	const hadDeviceCookie = Boolean(deviceId);
 
 	if (hasCookieSecret && !deviceId && unsignedCookieValue) {
 		// Rotate unsigned/invalid cookie values when signature is expected.
@@ -88,6 +89,8 @@ module.exports = (req, res, next) => {
 			String(req.headers['x-fraud-challenge-token'] || '').trim() || null,
 		enabled: FRAUD_CONFIG.enabled,
 		deviceCookieSigned: hasCookieSecret,
+		deviceCookiePresent: hadDeviceCookie,
+		deviceCookieCreated: shouldPersistDeviceCookie,
 	};
 
 	next();

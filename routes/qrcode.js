@@ -13,7 +13,7 @@ const { buildFrontendUrl } = require('../utils/publicUrls');
 const { getUploadsRoot, ensureUploadsSubdir } = require('../utils/runtimePaths');
 
 const router = express.Router();
-const QR_LAYOUT_VERSION = 'layoutV4';
+const QR_LAYOUT_VERSION = 'layoutV5StaticLogo';
 
 function resolveTargetPages(type, explain) {
 	if (type === 'binary') {
@@ -139,11 +139,13 @@ function readLogoDataUri(logoPath) {
 function resolveLogoPath() {
 	const uploadsRoot = getUploadsRoot();
 	const candidates = [
-		path.join(uploadsRoot, 'logo.svg'),
+		// QR codes need a static raster mark. The animated frontend SVG can render
+		// invisible in exported QR files, so it is deliberately not used here.
+		path.join(__dirname, '../../frontend/assets/qr-logo.png'),
+		path.join(uploadsRoot, 'qr-logo.png'),
 		path.join(uploadsRoot, 'logo.png'),
 		path.join(uploadsRoot, 'logo.jpg'),
 		path.join(uploadsRoot, 'logo.jpeg'),
-		path.join(__dirname, '../../frontend/assets/logo.svg'),
 		path.join(__dirname, '../../frontend/assets/logo.png'),
 	];
 

@@ -19,6 +19,7 @@ const FRAUD_REQUIRED_PROD_SECRETS = [
 	'FRAUD_IP_HASH_SECRET',
 	'FRAUD_DEVICE_HASH_SECRET',
 	'FRAUD_DEVICE_COOKIE_SECRET',
+	'MACHINE_SIGNATURE_HASH_SECRET',
 ];
 
 const parseBoolean = (value, fallback = false) => {

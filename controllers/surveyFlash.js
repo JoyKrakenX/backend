@@ -17,6 +17,13 @@ const {
 	evaluateFraudDecision,
 	buildOpinionFraudFields,
 } = require('../services/fraud/fraudDecisionService');
+const {
+	reserveDeviceVote,
+	commitDeviceVoteLocks,
+	commitDeviceTrace,
+	releaseDeviceVoteLocks,
+	applyMachineDecisionToFraudDecision,
+} = require('../services/fraud/deviceIntegrityService');
 const { logFraudDecision } = require('../services/fraud/fraudDecisionLogService');
 const {
 	buildStatusFilter,
@@ -138,6 +145,7 @@ exports.getState = async (req, res) => {
 };
 
 exports.submitOpinion = async (req, res) => {
+	let deviceVoteReservation = null;
 	try {
 		const survey = await Survey.findById(req.params.id);
 		if (!survey) {
@@ -227,6 +235,24 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
+		deviceVoteReservation = await reserveDeviceVote({
+			req,
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: 'binary_flash',
+			fraudDecision,
+		});
+		if (!deviceVoteReservation.ok) {
+			return res.status(deviceVoteReservation.httpStatus || 403).json({
+				code: deviceVoteReservation.code,
+				message: deviceVoteReservation.message,
+			});
+		}
+		applyMachineDecisionToFraudDecision({
+			fraudDecision,
+			machineDecision: deviceVoteReservation.machineDecision,
+		});
+
 		const commentModerationPromise =
 			reason ?
 				moderateSurveyComment({
@@ -261,6 +287,15 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
+		await commitDeviceVoteLocks({
+			reservation: deviceVoteReservation,
+			opinionId: opinion._id,
+		});
+		await commitDeviceTrace({
+			reservation: deviceVoteReservation,
+			opinionId: opinion._id,
+			fraudStatus: opinion.fraudStatus,
+		});
 		res.status(201).json({
 			message: 'Opinion enregistrée !',
 			hasParticipated: true,
@@ -336,6 +371,10 @@ exports.submitOpinion = async (req, res) => {
 			}
 		})();
 	} catch (error) {
+		await releaseDeviceVoteLocks({
+			lockIds: deviceVoteReservation?.createdLockIds || [],
+			userId: req.userId,
+		});
 		if (error && error.code === 11000) {
 			return res.status(403).json({
 				message:
@@ -823,6 +862,3 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
-
-
-

@@ -28,6 +28,13 @@ const {
 	evaluateFraudDecision,
 	buildOpinionFraudFields,
 } = require('../services/fraud/fraudDecisionService');
+const {
+	reserveDeviceVote,
+	commitDeviceVoteLocks,
+	commitDeviceTrace,
+	releaseDeviceVoteLocks,
+	applyMachineDecisionToFraudDecision,
+} = require('../services/fraud/deviceIntegrityService');
 const { logFraudDecision } = require('../services/fraud/fraudDecisionLogService');
 const {
 	buildStatusFilter,
@@ -296,6 +303,7 @@ exports.getState = async (req, res) => {
 };
 
 exports.submitOpinion = async (req, res) => {
+	let deviceVoteReservation = null;
 	try {
 		const surveyId = req.params.id;
 		const survey = await Survey.findById(surveyId);
@@ -348,18 +356,6 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 		const normalizedReason = String(req.body.reason || '').trim();
-		const commentModerationPromise =
-			normalizedReason ?
-				moderateSurveyComment({
-					text: normalizedReason,
-					locale: req.body.locale,
-					surveyId: survey._id,
-					surveyType: 'binary',
-					surveyModel: 'Opinion',
-					userId: req.userId,
-					userPseudoSnapshot: req.userPseudo,
-				})
-			:	Promise.resolve(null);
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
@@ -398,7 +394,36 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
-		const commentModerationResult = await commentModerationPromise;
+		deviceVoteReservation = await reserveDeviceVote({
+			req,
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: 'binary',
+			fraudDecision,
+		});
+		if (!deviceVoteReservation.ok) {
+			return res.status(deviceVoteReservation.httpStatus || 403).json({
+				code: deviceVoteReservation.code,
+				message: deviceVoteReservation.message,
+			});
+		}
+		applyMachineDecisionToFraudDecision({
+			fraudDecision,
+			machineDecision: deviceVoteReservation.machineDecision,
+		});
+
+		const commentModerationResult =
+			normalizedReason ?
+				await moderateSurveyComment({
+					text: normalizedReason,
+					locale: req.body.locale,
+					surveyId: survey._id,
+					surveyType: 'binary',
+					surveyModel: 'Opinion',
+					userId: req.userId,
+					userPseudoSnapshot: req.userPseudo,
+				})
+			:	null;
 
 		const opinion = new Opinion({
 			answer: req.body.answer,
@@ -419,6 +444,15 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
+		await commitDeviceVoteLocks({
+			reservation: deviceVoteReservation,
+			opinionId: opinion._id,
+		});
+		await commitDeviceTrace({
+			reservation: deviceVoteReservation,
+			opinionId: opinion._id,
+			fraudStatus: opinion.fraudStatus,
+		});
 		res.status(201).json({
 			message: 'Opinion enregistrée !',
 			hasParticipated: true,
@@ -470,6 +504,16 @@ exports.submitOpinion = async (req, res) => {
 			}
 		})();
 	} catch (err) {
+		await releaseDeviceVoteLocks({
+			lockIds: deviceVoteReservation?.createdLockIds || [],
+			userId: req.userId,
+		});
+		if (err && err.code === 11000) {
+			return res.status(403).json({
+				message:
+					'Vous avez déjà répondu à ce sondage, merci de patienter la publication des résultats.',
+			});
+		}
 		console.error('ERREUR dans submitOpinion:', err);
 		console.error('Stack trace:', err.stack);
 		res.status(500).json({ error: err.message });
@@ -1039,11 +1083,18 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 			totalOpinions: counts.totalOpinions,
 			occurredAt: new Date(),
 		});
-		await refreshAndEmitBroadcastSnapshot({
-			io,
-			surveyId: survey._id,
-			reason: 'quarantine-reviewed',
-		});
+		try {
+			await refreshAndEmitBroadcastSnapshot({
+				io,
+				surveyId: survey._id,
+				reason: 'quarantine-reviewed',
+			});
+		} catch (broadcastError) {
+			console.error(
+				'survey.reviewQuarantineOpinion broadcast refresh error:',
+				broadcastError?.message || broadcastError,
+			);
+		}
 
 		const integrity = await getIntegritySnapshotForSurvey(
 			OpinionModel,
@@ -1063,6 +1114,3 @@ exports.reviewQuarantineOpinion = async (req, res) => {
 		return res.status(500).json({ message: 'Erreur serveur' });
 	}
 };
-
-
-

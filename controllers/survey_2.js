@@ -41,6 +41,13 @@ const {
 	evaluateFraudDecision,
 	buildOpinionFraudFields,
 } = require('../services/fraud/fraudDecisionService');
+const {
+	reserveDeviceVote,
+	commitDeviceVoteLocks,
+	commitDeviceTrace,
+	releaseDeviceVoteLocks,
+	applyMachineDecisionToFraudDecision,
+} = require('../services/fraud/deviceIntegrityService');
 const { logFraudDecision } = require('../services/fraud/fraudDecisionLogService');
 const {
 	buildStatusFilter,
@@ -342,6 +349,7 @@ exports.getState = async (req, res) => {
 };
 
 exports.submitOpinion = async (req, res) => {
+	let deviceVoteReservation = null;
 	try {
 		const surveyId = req.params.id;
 		const survey = await Survey_2.findById(surveyId);
@@ -397,15 +405,6 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
 		const normalizedReason = String(req.body.reason || '').trim();
-		const commentModerationPromise = moderateSurveyComment({
-			text: normalizedReason,
-			locale: req.body.locale,
-			surveyId: survey._id,
-			surveyType: 'multiple',
-			surveyModel: 'Opinion_2',
-			userId: req.userId,
-			userPseudoSnapshot: req.userPseudo,
-		});
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
@@ -444,7 +443,33 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
-		const commentModerationResult = await commentModerationPromise;
+		deviceVoteReservation = await reserveDeviceVote({
+			req,
+			userId: req.userId,
+			surveyId: survey._id,
+			surveyType: 'multiple',
+			fraudDecision,
+		});
+		if (!deviceVoteReservation.ok) {
+			return res.status(deviceVoteReservation.httpStatus || 403).json({
+				code: deviceVoteReservation.code,
+				message: deviceVoteReservation.message,
+			});
+		}
+		applyMachineDecisionToFraudDecision({
+			fraudDecision,
+			machineDecision: deviceVoteReservation.machineDecision,
+		});
+
+		const commentModerationResult = await moderateSurveyComment({
+			text: normalizedReason,
+			locale: req.body.locale,
+			surveyId: survey._id,
+			surveyType: 'multiple',
+			surveyModel: 'Opinion_2',
+			userId: req.userId,
+			userPseudoSnapshot: req.userPseudo,
+		});
 
 		const opinion = new Opinion_2({
 			answer: String(req.body.choice).trim(),
@@ -463,6 +488,15 @@ exports.submitOpinion = async (req, res) => {
 		});
 
 		await opinion.save();
+		await commitDeviceVoteLocks({
+			reservation: deviceVoteReservation,
+			opinionId: opinion._id,
+		});
+		await commitDeviceTrace({
+			reservation: deviceVoteReservation,
+			opinionId: opinion._id,
+			fraudStatus: opinion.fraudStatus,
+		});
 		res.status(201).json({
 			message: 'Opinion enregistrée !',
 			hasParticipated: true,
@@ -527,6 +561,10 @@ exports.submitOpinion = async (req, res) => {
 		})();
 		return;
 	} catch (error) {
+		await releaseDeviceVoteLocks({
+			lockIds: deviceVoteReservation?.createdLockIds || [],
+			userId: req.userId,
+		});
 		if (error?.code === 11000) {
 			return res.status(403).json({ message: 'Vous avez déjà répondu à ce sondage.' });
 		}

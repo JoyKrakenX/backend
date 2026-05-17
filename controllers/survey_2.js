@@ -71,6 +71,9 @@ const {
 	refreshAndEmitBroadcastSnapshot,
 	emitBroadcastStatus,
 } = require('../services/broadcastRealtimeService');
+const {
+	publishSurveyCommentToChat,
+} = require('../services/surveyCommentChatBridge');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -389,7 +392,8 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'Réponse invalide' });
 		}
 
-		const existingOpinion = await Opinion_2.findOne({
+		const OpinionModel = getMultipleOpinionModel(survey);
+		const existingOpinion = await OpinionModel.findOne({
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 		});
@@ -401,10 +405,11 @@ exports.submitOpinion = async (req, res) => {
 			});
 		}
 
-		if (!req.body.reason || String(req.body.reason).trim() === '') {
+		const normalizedReason = String(req.body.reason || '').trim();
+		const commentRequired = survey.explain !== false;
+		if (commentRequired && !normalizedReason) {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
-		const normalizedReason = String(req.body.reason || '').trim();
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
@@ -418,7 +423,7 @@ exports.submitOpinion = async (req, res) => {
 				req?.riskIdentity?.challengeToken ||
 				String(req.headers?.['x-fraud-challenge-token'] || '').trim() ||
 				null,
-			opinionModel: 'Opinion_2',
+			opinionModel: OpinionModel.modelName || 'Opinion_2',
 		});
 
 		if (fraudDecision.kind === 'challenge') {
@@ -461,19 +466,22 @@ exports.submitOpinion = async (req, res) => {
 			machineDecision: deviceVoteReservation.machineDecision,
 		});
 
-		const commentModerationResult = await moderateSurveyComment({
-			text: normalizedReason,
-			locale: req.body.locale,
-			surveyId: survey._id,
-			surveyType: 'multiple',
-			surveyModel: 'Opinion_2',
-			userId: req.userId,
-			userPseudoSnapshot: req.userPseudo,
-		});
+		const commentModerationResult =
+			normalizedReason ?
+				await moderateSurveyComment({
+					text: normalizedReason,
+					locale: req.body.locale,
+					surveyId: survey._id,
+					surveyType: 'multiple',
+					surveyModel: OpinionModel.modelName || 'Opinion_2',
+					userId: req.userId,
+					userPseudoSnapshot: req.userPseudo,
+				})
+			:	null;
 
-		const opinion = new Opinion_2({
+		const opinion = new OpinionModel({
 			answer: String(req.body.choice).trim(),
-			reason: normalizedReason,
+			reason: normalizedReason || undefined,
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 			userPseudo: req.userPseudo,
@@ -481,10 +489,12 @@ exports.submitOpinion = async (req, res) => {
 				result: fraudDecision,
 				identity: req.riskIdentity || {},
 			}),
-			...buildAutoModerationCommentFields({
-				decision: commentModerationResult.decision,
-				logEntry: commentModerationResult.logEntry,
-			}),
+				...(commentModerationResult ?
+					buildAutoModerationCommentFields({
+						decision: commentModerationResult.decision,
+						logEntry: commentModerationResult.logEntry,
+					})
+				:	{}),
 		});
 
 		await opinion.save();
@@ -521,12 +531,24 @@ exports.submitOpinion = async (req, res) => {
 					},
 				});
 				const { counts, totalOpinions } = await aggregateCountsByOptionKeys(
-					Opinion_2,
+					OpinionModel,
 					survey._id,
 					normalizedSurvey.optionKeys,
 					buildStatusFilter('clean'),
 				);
 				emitClassicMultipleOpinion({ io, survey, opinion });
+				const visibleReason = String(getOpinionVisibleReason(opinion) || '').trim();
+				if (visibleReason) {
+					await publishSurveyCommentToChat({
+						io,
+						surveyId: survey._id,
+						surveyModel: 'Survey_2',
+						userId: req.userId,
+						userPseudo: req.userPseudo,
+						userPicture: req.user?.picture || null,
+						message: visibleReason,
+					});
+				}
 				emitClassicMultipleCounts({
 					io,
 					survey,

@@ -47,6 +47,9 @@ const {
 	refreshAndEmitBroadcastSnapshot,
 	emitBroadcastStatus,
 } = require('../services/broadcastRealtimeService');
+const {
+	publishSurveyCommentToChat,
+} = require('../services/surveyCommentChatBridge');
 
 const sanitizeSurveyForClient = (survey) => {
 	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
@@ -336,6 +339,15 @@ exports.submitOpinion = async (req, res) => {
 						dislikeCount: 0,
 						userLiked: false,
 						userDisliked: false,
+					});
+					await publishSurveyCommentToChat({
+						io,
+						surveyId: survey._id,
+						surveyModel: 'Survey',
+						userId: req.userId,
+						userPseudo: req.userPseudo,
+						userPicture: req.user?.picture || null,
+						message: visibleReason,
 					});
 				}
 

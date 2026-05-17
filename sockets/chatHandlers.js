@@ -788,6 +788,26 @@ module.exports = (io) => {
 			}
 		});
 
+		socket.on('chatEmojiReaction', ({ emoji } = {}) => {
+			const authUser = socket.data?.authUser;
+			if (!authUser?.id) return;
+
+			const safeEmoji = String(emoji || '').trim().slice(0, 16);
+			if (!safeEmoji) return;
+
+			const surveyId = socket.data?.surveyId;
+			const roomName = socket.data?.roomName || (surveyId ? buildRoomName(surveyId) : null);
+			if (!roomName) return;
+
+			socket.to(roomName).emit('chatEmojiReaction', {
+				emoji: safeEmoji,
+				surveyId: String(surveyId || ''),
+				userId: String(authUser.id),
+				pseudo: authUser.pseudo || 'Utilisateur',
+				timestamp: new Date().toISOString(),
+			});
+		});
+
 		socket.on('messageReaction', async ({ messageId, action } = {}) => {
 			try {
 				const authUser = socket.data?.authUser;

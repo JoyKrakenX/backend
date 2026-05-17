@@ -58,6 +58,9 @@ const {
 	refreshAndEmitBroadcastSnapshot,
 	emitBroadcastStatus,
 } = require('../services/broadcastRealtimeService');
+const {
+	publishSurveyCommentToChat,
+} = require('../services/surveyCommentChatBridge');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -336,7 +339,8 @@ exports.submitOpinion = async (req, res) => {
 				message: entitlement.message,
 			});
 		}
-		const existingOpinion = await Opinion.findOne({
+		const OpinionModel = getBinaryOpinionModel(survey);
+		const existingOpinion = await OpinionModel.findOne({
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 		});
@@ -352,10 +356,11 @@ exports.submitOpinion = async (req, res) => {
 			return res.status(400).json({ message: 'Réponse invalide.' });
 		}
 
-		if (!req.body.reason || req.body.reason.trim() === '') {
+		const normalizedReason = String(req.body.reason || '').trim();
+		const commentRequired = survey.explain !== false;
+		if (commentRequired && !normalizedReason) {
 			return res.status(400).json({ message: 'La raison est obligatoire.' });
 		}
-		const normalizedReason = String(req.body.reason || '').trim();
 
 		const fraudDecision = await evaluateFraudDecision({
 			actionType: 'vote',
@@ -369,7 +374,7 @@ exports.submitOpinion = async (req, res) => {
 				req?.riskIdentity?.challengeToken ||
 				String(req.headers?.['x-fraud-challenge-token'] || '').trim() ||
 				null,
-			opinionModel: 'Opinion',
+			opinionModel: OpinionModel.modelName || 'Opinion',
 		});
 
 		if (fraudDecision.kind === 'challenge') {
@@ -419,15 +424,15 @@ exports.submitOpinion = async (req, res) => {
 					locale: req.body.locale,
 					surveyId: survey._id,
 					surveyType: 'binary',
-					surveyModel: 'Opinion',
+					surveyModel: OpinionModel.modelName || 'Opinion',
 					userId: req.userId,
 					userPseudoSnapshot: req.userPseudo,
 				})
 			:	null;
 
-		const opinion = new Opinion({
+		const opinion = new OpinionModel({
 			answer: req.body.answer,
-			reason: normalizedReason,
+			reason: normalizedReason || undefined,
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 			userPseudo: req.userPseudo,
@@ -476,8 +481,20 @@ exports.submitOpinion = async (req, res) => {
 					},
 				});
 
-				const counts = await getBinaryCounts(survey._id, Opinion);
+				const counts = await getBinaryCounts(survey._id, OpinionModel);
 				emitClassicBinaryOpinion(io, survey, opinion);
+				const visibleReason = String(getOpinionVisibleReason(opinion) || '').trim();
+				if (visibleReason) {
+					await publishSurveyCommentToChat({
+						io,
+						surveyId: survey._id,
+						surveyModel: 'Survey',
+						userId: req.userId,
+						userPseudo: req.userPseudo,
+						userPicture: req.user?.picture || null,
+						message: visibleReason,
+					});
+				}
 				emitClassicBinaryCounts(io, survey, counts, survey.isClosed);
 
 				emitSurveyFeedUpdate(req.app.get('io'), {

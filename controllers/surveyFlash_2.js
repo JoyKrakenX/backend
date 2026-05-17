@@ -55,6 +55,9 @@ const {
 	refreshAndEmitBroadcastSnapshot,
 	emitBroadcastStatus,
 } = require('../services/broadcastRealtimeService');
+const {
+	publishSurveyCommentToChat,
+} = require('../services/surveyCommentChatBridge');
 
 const formatOpinion = (opinion, userId) => {
 	const likeCount = (opinion.likes && opinion.likes.length) || 0;
@@ -342,6 +345,15 @@ exports.submitOpinion = async (req, res) => {
 						dislikeCount: 0,
 						userLiked: false,
 						userDisliked: false,
+					});
+					await publishSurveyCommentToChat({
+						io,
+						surveyId: survey._id,
+						surveyModel: 'Survey_2',
+						userId: req.userId,
+						userPseudo: req.userPseudo,
+						userPicture: req.user?.picture || null,
+						message: visibleReason,
 					});
 				}
 

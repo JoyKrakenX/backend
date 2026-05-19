@@ -27,6 +27,7 @@ const opinion_2_Schema = new mongoose.Schema({
 		type: String,
 		required: true,
 	},
+	scanId: { type: String, trim: true, default: null, index: true },
 	fraudStatus: {
 		type: String,
 		enum: ['accepted', 'quarantined', 'released', 'confirmed_fraud'],

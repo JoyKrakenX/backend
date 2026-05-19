@@ -43,6 +43,10 @@ const { emitBroadcastStatus } = require('../services/broadcastRealtimeService');
 const {
 	canManageSurveyByOrganization,
 } = require('../services/surveyAuthorizationService');
+const {
+	emitAdminAnalyticsUpdate,
+	recordChatEmoji,
+} = require('../services/surveyAnalyticsService');
 
 const buildRoomName = (surveyId) => `survey-${String(surveyId)}`;
 
@@ -806,6 +810,23 @@ module.exports = (io) => {
 				pseudo: authUser.pseudo || 'Utilisateur',
 				timestamp: new Date().toISOString(),
 			});
+			const analyticsType = socket.data?.surveyType === 'multiple' ? 'multiple' : 'binary';
+			recordChatEmoji({
+				surveyId,
+				type: analyticsType,
+				emoji: safeEmoji,
+				userId: authUser.id,
+			})
+				.then(() =>
+					emitAdminAnalyticsUpdate(io, {
+						surveyId,
+						type: analyticsType,
+						flash: Boolean(socket.data?.surveyFlash),
+					}),
+				)
+				.catch((error) => {
+					console.warn('chat analytics emoji failed:', error?.message || error);
+				});
 		});
 
 		socket.on('messageReaction', async ({ messageId, action } = {}) => {

@@ -469,108 +469,22 @@ const authorizeActionUncached = async ({
 	};
 
 	if (action === ENTITLEMENT_ACTIONS.CREATE_SURVEY) {
-		const surveysQuota = normalizeQuota(quotas.surveys);
-		if (isFiniteQuota(surveysQuota) && toSafeCount(counts.surveys) >= surveysQuota) {
-			return denyWithAudit(
-				ENTITLEMENT_DENY_CODES.SURVEYS_LIMIT_REACHED,
-				'Capacite de campagnes atteinte pour ce cycle.',
-				{
-					...resultPayload,
-					nextAction: buildNextAction({
-						effectivePlanCode: context.effectivePlanCode,
-						metricKey: 'surveys',
-					}),
-				},
-			);
-		}
 		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.EXPORT) {
-		if (context.effectivePlan.features?.exportsEnabled === false) {
-			return denyWithAudit(
-				ENTITLEMENT_DENY_CODES.FEATURE_DISABLED,
-				'Les exports avances ne sont pas disponibles sur ce plan.',
-				{
-					...resultPayload,
-					nextAction: buildNextAction({
-						effectivePlanCode: context.effectivePlanCode,
-						metricKey: 'exports',
-					}),
-				},
-			);
-		}
-		const exportsQuota = normalizeQuota(quotas.exports);
-		if (isFiniteQuota(exportsQuota) && toSafeCount(counts.exports) >= exportsQuota) {
-			return denyWithAudit(
-				ENTITLEMENT_DENY_CODES.EXPORTS_LIMIT_REACHED,
-				'Capacite d exports atteinte pour ce cycle.',
-				{
-					...resultPayload,
-					nextAction: buildNextAction({
-						effectivePlanCode: context.effectivePlanCode,
-						metricKey: 'exports',
-					}),
-				},
-			);
-		}
 		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.JOIN_CHAT) {
-		if (context.effectivePlan.features?.chatEnabled === false) {
-			return denyWithAudit(
-				ENTITLEMENT_DENY_CODES.FEATURE_DISABLED,
-				'Le chat n est pas disponible sur ce plan.',
-				resultPayload,
-			);
-		}
 		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.MANAGE_ADMINS) {
-		const adminLimit = normalizeQuota(quotas.admins);
-		const adminsCount = Math.max(
-			toSafeCount(context.usage.adminsPeak),
-			toSafeCount(context.usage.adminsCurrent),
-		);
-		if (isFiniteQuota(adminLimit) && adminsCount >= adminLimit) {
-			return denyWithAudit(
-				ENTITLEMENT_DENY_CODES.ADMINS_LIMIT_REACHED,
-				'Capacite admins atteinte pour ce cycle.',
-				{
-					...resultPayload,
-					remaining: {
-						admins: buildRemaining(adminLimit, adminsCount),
-					},
-					nextAction: buildNextAction({
-						effectivePlanCode: context.effectivePlanCode,
-						metricKey: 'admins',
-					}),
-				},
-			);
-		}
 		return buildAllowed(resultPayload);
 	}
 
 	if (action === ENTITLEMENT_ACTIONS.VOTE) {
-		const voteLimit = normalizeQuota(quotas.votes);
-		if (isFiniteQuota(voteLimit) && toSafeCount(counts.votes) >= voteLimit) {
-			return denyWithAudit(
-				ENTITLEMENT_DENY_CODES.RESPONSES_LIMIT_REACHED,
-				'Capacite de participation atteinte pour ce cycle.',
-				{
-					...resultPayload,
-					remaining: {
-						votes: buildRemaining(voteLimit, counts.votes),
-					},
-					nextAction: buildNextAction({
-						effectivePlanCode: context.effectivePlanCode,
-						metricKey: 'votes',
-					}),
-				},
-			);
-		}
 		return buildAllowed(resultPayload);
 	}
 

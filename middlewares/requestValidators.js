@@ -2,28 +2,10 @@
 
 const { z } = require('zod');
 
-const statusSchema = z
-	.string()
-	.trim()
-	.toLowerCase()
-	.optional()
-	.refine(
-		(value) =>
-			!value ||
-			[
-				'public',
-				'privée',
-				'privee',
-				'private',
-				'privé',
-				'prive',
-			].includes(value),
-		{ message: 'Statut de sondage invalide.' },
-	);
-
 const explainSchema = z.union([z.boolean(), z.string(), z.number()]).optional();
 const legacyMultipleOptionSchema = z.string().trim().max(220).nullish();
 const localeSchema = z.enum(['fr', 'en', 'es', 'de']).optional();
+const scanIdSchema = z.string().trim().min(8).max(80).optional();
 const deviceIntegritySchema = z
 	.object({
 		version: z.number().int().min(1).max(5).optional(),
@@ -51,8 +33,14 @@ const createBinarySurveySchema = z.object({
 	question: z.string().trim().min(3).max(600),
 	contexte: z.string().trim().max(5000).optional().or(z.literal('')),
 	explain: explainSchema,
-	status: statusSchema,
 	organizationId: z.string().trim().optional(),
+	binaryLabels: z
+		.object({
+			yes: z.string().trim().min(1).max(60).optional(),
+			no: z.string().trim().min(1).max(60).optional(),
+			preset: z.string().trim().max(80).optional(),
+		})
+		.optional(),
 });
 
 const createMultipleSurveySchema = createBinarySurveySchema
@@ -93,6 +81,7 @@ const binaryVoteSchema = z.object({
 	turnstileToken: z.string().trim().min(1).max(4096).optional(),
 	deviceIntegrity: deviceIntegritySchema,
 	locale: localeSchema,
+	scanId: scanIdSchema,
 });
 
 const multipleVoteSchema = z.object({
@@ -101,6 +90,7 @@ const multipleVoteSchema = z.object({
 	turnstileToken: z.string().trim().min(1).max(4096).optional(),
 	deviceIntegrity: deviceIntegritySchema,
 	locale: localeSchema,
+	scanId: scanIdSchema,
 });
 
 const chatSendSchema = z.object({

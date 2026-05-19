@@ -7,6 +7,7 @@ const Opinion = require('../models/Opinion');
 const OpinionFlash = require('../models/Opinion_Flash');
 const User = require('../models/User');
 const { normalizeQuestion } = require('../utils/questionNormalizer');
+const { normalizeBinaryLabels } = require('../utils/binarySurveyLabels');
 const {
 	buildAdminProfilesByUserId,
 } = require('../utils/commentAnonymizer');
@@ -61,6 +62,10 @@ const {
 const {
 	publishSurveyCommentToChat,
 } = require('../services/surveyCommentChatBridge');
+const {
+	emitAdminAnalyticsUpdate,
+	recordVoteConversion,
+} = require('../services/surveyAnalyticsService');
 
 const parseExplainFlag = (value) => {
 	if (typeof value === 'boolean') return value;
@@ -178,8 +183,8 @@ exports.createSurvey = async (req, res) => {
 			theme: realTheme,
 			contexte: req.body.contexte,
 			question: normalizeQuestion(req.body.question),
+			binaryLabels: normalizeBinaryLabels(req.body.binaryLabels),
 			explain: parseExplainFlag(req.body.explain),
-			status: normalizeSurveyStatus(req.body.status),
 			userId: req.userId,
 			organizationId: organizationContext.organization._id,
 		});
@@ -436,6 +441,7 @@ exports.submitOpinion = async (req, res) => {
 			surveyId: toObjectId(surveyId),
 			userId: req.userId,
 			userPseudo: req.userPseudo,
+			scanId: String(req.body.scanId || '').trim() || null,
 			...buildOpinionFraudFields({
 				result: fraudDecision,
 				identity: req.riskIdentity || {},
@@ -516,6 +522,20 @@ exports.submitOpinion = async (req, res) => {
 					surveyId: survey._id,
 					reason: 'survey-vote',
 				});
+				await recordVoteConversion({
+					surveyId: survey._id,
+					type: 'binary',
+					flash: survey.explain === false,
+					scanId: req.body.scanId,
+					userId: req.userId,
+					opinionId: opinion._id,
+					answer: opinion.answer,
+				});
+				await emitAdminAnalyticsUpdate(io, {
+					surveyId: survey._id,
+					type: 'binary',
+					flash: survey.explain === false,
+				});
 			} catch (postCommitError) {
 				console.error('submitOpinion.postCommit error:', postCommitError);
 			}
@@ -580,25 +600,25 @@ exports.getDetailedStats = async (req, res) => {
 				.lean(),
 		);
 		const allowAdminFilters = await canManageSurveyByOrganization(survey, req.userId);
-		const canViewResults = hasParticipated || allowAdminFilters;
 		const canVote = !survey.isClosed && !hasParticipated;
+		const canViewResults = hasParticipated;
 		if (!canViewResults) {
-			if (survey.isClosed) {
-				return res.status(403).json({
-					message: 'Ce sondage est clôturé. Les résultats sont réservés aux votants.',
-				});
-			}
 			return res.status(403).json({
-				message: 'Votez pour accéder aux résultats en temps réel.',
+				code: allowAdminFilters ? 'ADMIN_VOTE_REQUIRED' : 'VOTE_REQUIRED',
+				message:
+					survey.isClosed ?
+						'Ce sondage est clôturé. Les résultats sont réservés aux votants.'
+					: allowAdminFilters ?
+						'Votez depuis la page administrateur pour accéder aux résultats.'
+					:	'Votez pour accéder aux résultats en temps réel.',
+				hasParticipated,
+				canVote,
+				canViewResults: false,
 			});
 		}
 
-		const cleanFilter = buildStatusFilter('clean');
-		const results = await OpinionModel.find({ surveyId, ...cleanFilter }).lean();
-		const integrity =
-			allowAdminFilters ?
-				await getIntegritySnapshotForSurvey(OpinionModel, survey._id)
-			:	null;
+		const results = await OpinionModel.find({ surveyId }).lean();
+		const integrity = null;
 		let adminProfilesByUserId = null;
 
 		if (allowAdminFilters) {

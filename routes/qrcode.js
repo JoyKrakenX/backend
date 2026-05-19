@@ -19,13 +19,13 @@ function resolveTargetPages(type, explain) {
 	if (type === 'binary') {
 		return {
 			answer: explain ? 'survey.html' : 'survey-flash-binary.html',
-			results: explain ? 'survey.html' : 'survey-results-admin.html',
+			results: 'survey-results-admin.html',
 		};
 	}
 
 	return {
 		answer: explain ? 'survey-choices.html' : 'survey-flash-multiple.html',
-		results: explain ? 'survey-choices.html' : 'survey-results-admin.html',
+		results: 'survey-results-admin.html',
 	};
 }
 
@@ -182,15 +182,26 @@ router.post('/generate', async (req, res) => {
 		const pages = resolveTargetPages(type, explain);
 		const answerQuery = { id: surveyId, type };
 		const isFlashSurvey = explain === false;
-		const resultsQuery =
-			isFlashSurvey ?
+		const resultsQuery = isFlashSurvey ?
 				{ Id: surveyId, type, flash: 1 }
-			:	{ id: surveyId, type };
+			:	{ Id: surveyId, type };
 
+		const trackableSourceDescriptors = [
+			{ key: 'tv', source: 'tv' },
+			{ key: 'social', source: 'social' },
+			{ key: 'direct', source: 'direct' },
+		];
+		const trackableUrls = Object.fromEntries(
+			trackableSourceDescriptors.map(({ key, source }) => [
+				key,
+				buildFrontendUrl(req, pages.answer, { ...answerQuery, source }),
+			]),
+		);
 		const urls = {
-			answer: buildFrontendUrl(req, pages.answer, answerQuery),
+			answer: trackableUrls.tv,
 			results: buildFrontendUrl(req, pages.results, resultsQuery),
 			dashboard: buildFrontendUrl(req, 'my-surveys.html'),
+			trackable: trackableUrls,
 		};
 
 		const targetUrl = urls.answer;

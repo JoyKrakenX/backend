@@ -5,11 +5,17 @@ const {
 	SURVEY_STATUS_ENUM,
 	SURVEY_STATUS_PUBLIC,
 } = require('../utils/surveyStatus');
+const { DEFAULT_BINARY_LABELS } = require('../utils/binarySurveyLabels');
 
 const surveySchema = mongoose.Schema({
 	theme: { type: String, required: true },
 	contexte: { type: String },
 	question: { type: String, required: true },
+	binaryLabels: {
+		yes: { type: String, default: DEFAULT_BINARY_LABELS.yes },
+		no: { type: String, default: DEFAULT_BINARY_LABELS.no },
+		preset: { type: String, default: DEFAULT_BINARY_LABELS.preset },
+	},
 	explain: { type: Boolean, default: true },
 	status: {
 		type: String,

@@ -1,7 +1,7 @@
 /** @format */
 
 const Plan = require('../../models/Plan');
-const { PLAN_CATALOG, PUBLIC_PLAN_CODES } = require('./constants');
+const { PLAN_CATALOG, PUBLIC_PLAN_CODES, PLAN_CODES } = require('./constants');
 const { normalizeQuota } = require('./quotaUtils');
 
 const PLAN_QUOTA_KEYS = Object.freeze([
@@ -83,7 +83,13 @@ const getPublicPlans = async () =>
 
 const getPlanByCode = async (planCode) => {
 	if (!planCode) return null;
-	return Plan.findOne({ code: String(planCode).trim().toUpperCase() }).lean();
+	const normalizedCode = String(planCode).trim().toUpperCase();
+	const resolvedCode =
+		normalizedCode === PLAN_CODES.UNLIMITED ||
+		['FREE', 'STARTER', 'GROWTH', 'SCALE', 'ENTERPRISE'].includes(normalizedCode)
+			? PLAN_CODES.UNLIMITED
+			: normalizedCode;
+	return Plan.findOne({ code: resolvedCode }).lean();
 };
 
 module.exports = {

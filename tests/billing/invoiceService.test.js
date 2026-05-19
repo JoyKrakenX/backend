@@ -6,17 +6,14 @@ const {
 	buildAddonInvoiceDraft,
 } = require('../../services/billing/invoiceService');
 
-test('buildRecurringAddonLineItems only bills recurring add-ons and sums totals', () => {
+test('buildRecurringAddonLineItems ignores legacy add-ons after catalog removal', () => {
 	const result = buildRecurringAddonLineItems([
 		{ code: 'ADMIN_PACK_5', kind: 'recurring', quantity: 2 },
 		{ code: 'LIVE_EVENT_BOOST_72H', kind: 'one_time', quantity: 1 },
 	]);
 
-	assert.equal(result.lineItems.length, 1);
-	assert.equal(result.lineItems[0].code, 'addon_admin_pack_5');
-	assert.equal(result.lineItems[0].quantity, 2);
-	assert.equal(result.lineItems[0].amountUsd, 30);
-	assert.equal(result.totalUsd, 30);
+	assert.equal(result.lineItems.length, 0);
+	assert.equal(result.totalUsd, 0);
 });
 
 test('buildAddonInvoiceDraft creates an explicit addon invoice without overage fields', () => {

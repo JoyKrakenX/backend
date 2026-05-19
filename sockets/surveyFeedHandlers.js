@@ -7,7 +7,6 @@ const OpinionFlash = require('../models/Opinion_Flash');
 const Opinion2 = require('../models/Opinion_2');
 const Opinion2Flash = require('../models/Opinion_2_Flash');
 const OrganizationMember = require('../models/OrganizationMember');
-const { normalizeSurveyStatus, isSurveyPublic } = require('../utils/surveyStatus');
 
 const userBrowseRoom = (userId) => `surveys:user:${String(userId)}`;
 const ownerRoom = (ownerUserId) => `surveys:owner:${String(ownerUserId)}`;
@@ -72,7 +71,6 @@ const buildSurveyFeedPayload = (payload = {}) => {
 		surveyId,
 		type: normalizedType,
 		explain: payload.explain === false ? false : true,
-		status: normalizeSurveyStatus(payload.status),
 		isClosed: Boolean(payload.isClosed),
 		ownerUserId,
 		organizationId: organizationId || null,
@@ -148,23 +146,12 @@ const resolveBrowseAudience = async (io, normalizedPayload) => {
 	const connectedUserIds = getConnectedUserIds(io);
 	if (!connectedUserIds.length) return [];
 
-	if (isSurveyPublic(normalizedPayload.status)) {
-		return connectedUserIds;
-	}
-
-	if (!normalizedPayload.isClosed) {
-		return [];
-	}
-
 	const participants = await resolveParticipantIds({
 		surveyId: normalizedPayload.surveyId,
 		type: normalizedPayload.type,
 		explain: normalizedPayload.explain,
 	});
-	const allowed = new Set([
-		normalizedPayload.ownerUserId,
-		...participants,
-	]);
+	const allowed = new Set(participants);
 
 	return connectedUserIds.filter((userId) => allowed.has(String(userId)));
 };

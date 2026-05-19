@@ -7,10 +7,6 @@ const Opinion = require('../models/Opinion');
 const Opinion_2 = require('../models/Opinion_2');
 const Opinion_Flash = require('../models/Opinion_Flash');
 const Opinion_2_Flash = require('../models/Opinion_2_Flash');
-const {
-	normalizeSurveyStatus,
-	isSurveyPublic,
-} = require('../utils/surveyStatus');
 const { aggregateCountBySurvey } = require('../services/fraud/opinionFilterService');
 
 const DEFAULT_ALL_SURVEYS_MAX_ITEMS = 500;
@@ -25,11 +21,6 @@ const ALL_SURVEYS_MAX_ITEMS = (() => {
 	);
 })();
 
-const MAX_ITEMS_PER_MODEL = Math.max(
-	ALL_SURVEYS_MIN_ITEMS,
-	Math.ceil(ALL_SURVEYS_MAX_ITEMS * 1.2),
-);
-
 const SURVEY_LIST_PROJECTION =
 	'_id theme question contexte explain status createdAt userId organizationId isClosed endedAt';
 
@@ -42,17 +33,15 @@ const toSurveyIds = (surveys) =>
 const countOpinionsBySurvey = async (OpinionModel, surveyIds = []) =>
 	aggregateCountBySurvey(OpinionModel, surveyIds, 'clean');
 
-const distinctSurveyParticipation = async (
-	OpinionModel,
-	userId,
-	limitedSurveyIds = [],
-) => {
-	if (!userId || !limitedSurveyIds.length) return [];
+const distinctSurveyParticipation = async (OpinionModel, userId) => {
+	if (!userId) return [];
 	return OpinionModel.distinct('surveyId', {
 		userId,
-		surveyId: { $in: limitedSurveyIds },
 	});
 };
+
+const toUniqueStringArray = (values = []) =>
+	[...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
 
 const getCreatorIds = (...surveyGroups) =>
 	[
@@ -87,24 +76,50 @@ const resolveCreatorName = (survey, creatorsById) => {
 exports.getAllSurveys = async (req, res, next) => {
 	try {
 		const userId = req.userId || null;
-		const requesterUserId = userId ? String(userId) : '';
+		if (!userId) {
+			return res.status(200).json([]);
+		}
 
-		const settled = await Promise.allSettled([
-			Survey.find({})
-				.select(SURVEY_LIST_PROJECTION)
-				.sort({ createdAt: -1 })
-				.limit(MAX_ITEMS_PER_MODEL)
-				.lean(),
-			Survey_2.find({})
-				.select(SURVEY_LIST_PROJECTION)
-				.sort({ createdAt: -1 })
-				.limit(MAX_ITEMS_PER_MODEL)
-				.lean(),
+		const [
+			binaryParticipations,
+			multipleParticipations,
+			binaryFlashParticipations,
+			multipleFlashParticipations,
+		] = await Promise.all([
+			distinctSurveyParticipation(Opinion, userId),
+			distinctSurveyParticipation(Opinion_2, userId),
+			distinctSurveyParticipation(Opinion_Flash, userId),
+			distinctSurveyParticipation(Opinion_2_Flash, userId),
 		]);
 
-		const surveysBinary = settledValueOr(settled[0], []);
-		const surveysMultiple = settledValueOr(settled[1], []);
-		const creatorsById = await getCreatorsById(surveysBinary, surveysMultiple);
+		const participatedSurveyIdsByModel = {
+			binary: toUniqueStringArray([
+				...binaryParticipations,
+				...binaryFlashParticipations,
+			]),
+			multiple: toUniqueStringArray([
+				...multipleParticipations,
+				...multipleFlashParticipations,
+			]),
+		};
+
+		if (
+			!participatedSurveyIdsByModel.binary.length &&
+			!participatedSurveyIdsByModel.multiple.length
+		) {
+			return res.status(200).json([]);
+		}
+
+		const settled = await Promise.allSettled([
+			Survey.find({ _id: { $in: participatedSurveyIdsByModel.binary } })
+				.select(SURVEY_LIST_PROJECTION)
+				.sort({ createdAt: -1 })
+				.lean(),
+			Survey_2.find({ _id: { $in: participatedSurveyIdsByModel.multiple } })
+				.select(SURVEY_LIST_PROJECTION)
+				.sort({ createdAt: -1 })
+				.lean(),
+		]);
 
 		settled.forEach((entry, index) => {
 			if (entry.status === 'rejected') {
@@ -115,20 +130,11 @@ exports.getAllSurveys = async (req, res, next) => {
 			}
 		});
 
+		const surveysBinary = settledValueOr(settled[0], []);
+		const surveysMultiple = settledValueOr(settled[1], []);
+		const creatorsById = await getCreatorsById(surveysBinary, surveysMultiple);
 		const binaryIds = toSurveyIds(surveysBinary);
 		const multipleIds = toSurveyIds(surveysMultiple);
-
-		const [
-			binaryParticipations,
-			multipleParticipations,
-			binaryFlashParticipations,
-			multipleFlashParticipations,
-		] = await Promise.all([
-			distinctSurveyParticipation(Opinion, userId, binaryIds),
-			distinctSurveyParticipation(Opinion_2, userId, multipleIds),
-			distinctSurveyParticipation(Opinion_Flash, userId, binaryIds),
-			distinctSurveyParticipation(Opinion_2_Flash, userId, multipleIds),
-		]);
 
 		const binaryClassic = surveysBinary.filter((survey) => survey.explain !== false);
 		const binaryFlash = surveysBinary.filter((survey) => survey.explain === false);
@@ -173,7 +179,6 @@ exports.getAllSurveys = async (req, res, next) => {
 
 		const formattedBinary = surveysBinary.map((survey) => ({
 			...survey,
-			status: normalizeSurveyStatus(survey.status),
 			type: 'binary',
 			creatorName: resolveCreatorName(survey, creatorsById),
 			totalVotes:
@@ -192,7 +197,6 @@ exports.getAllSurveys = async (req, res, next) => {
 
 		const formattedMultiple = surveysMultiple.map((survey) => ({
 			...survey,
-			status: normalizeSurveyStatus(survey.status),
 			type: 'multiple',
 			creatorName: resolveCreatorName(survey, creatorsById),
 			totalVotes:
@@ -210,16 +214,6 @@ exports.getAllSurveys = async (req, res, next) => {
 		}));
 
 		const allSurveys = [...formattedBinary, ...formattedMultiple]
-			.filter((survey) => {
-				const normalizedStatus = normalizeSurveyStatus(survey.status);
-				if (isSurveyPublic(normalizedStatus)) return true;
-
-				if (!survey.isClosed) return false;
-				const isOwner =
-					Boolean(requesterUserId) &&
-					String(survey.userId || '') === requesterUserId;
-				return Boolean(survey.hasParticipated || isOwner);
-			})
 			.sort((left, right) => {
 				return new Date(right.createdAt) - new Date(left.createdAt);
 			})

@@ -37,6 +37,7 @@ const organizationRoutes = require('./routes/organizations');
 const exportRoutes = require('./routes/exports');
 const fraudRoutes = require('./routes/fraud');
 const broadcastRoutes = require('./routes/broadcast');
+const surveyAnalyticsRoutes = require('./routes/surveyAnalytics');
 const { globalRateLimit } = require('./middlewares/securityRateLimit');
 const { ensurePlanCatalog } = require('./services/billing/planService');
 const { validateProductionSecrets } = require('./utils/securityStartup');
@@ -108,6 +109,8 @@ app.use(
 		contentSecurityPolicy: {
 			useDefaults: true,
 			directives: {
+				// Results sharing generates PNG snapshots with html2canvas loaded on demand.
+				scriptSrc: ["'self'", 'https://cdn.jsdelivr.net'],
 				// Allow source-map fetches from Bootstrap CDN without relaxing default-src.
 				connectSrc: ["'self'", 'https://cdn.jsdelivr.net'],
 				// Keep CSP strict while allowing external user avatars.
@@ -198,6 +201,7 @@ app.use('/api/organizations', organizationRoutes);
 app.use('/api/exports', exportRoutes);
 app.use('/api/fraud', fraudRoutes);
 app.use('/api/broadcast', broadcastRoutes);
+app.use('/api/survey-analytics', surveyAnalyticsRoutes);
 
 // ---------------------------
 // Uploads statiques

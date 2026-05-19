@@ -3,6 +3,7 @@
 const Survey = require('../models/Survey');
 const OpinionFlash = require('../models/Opinion_Flash');
 const User = require('../models/User');
+const { normalizeBinaryLabels } = require('../utils/binarySurveyLabels');
 const { emitSurveyFeedUpdate } = require('../sockets/surveyFeedHandlers');
 const {
 	buildAdminProfilesByUserId,
@@ -50,6 +51,10 @@ const {
 const {
 	publishSurveyCommentToChat,
 } = require('../services/surveyCommentChatBridge');
+const {
+	emitAdminAnalyticsUpdate,
+	recordVoteConversion,
+} = require('../services/surveyAnalyticsService');
 
 const sanitizeSurveyForClient = (survey) => {
 	const source = typeof survey?.toObject === 'function' ? survey.toObject() : { ...survey };
@@ -57,6 +62,7 @@ const sanitizeSurveyForClient = (survey) => {
 		_id: source?._id,
 		theme: source?.theme,
 		question: source?.question,
+		binaryLabels: normalizeBinaryLabels(source?.binaryLabels),
 		contexte: source?.contexte,
 		explain: source?.explain,
 		status: normalizeSurveyStatus(source?.status),
@@ -277,6 +283,7 @@ exports.submitOpinion = async (req, res) => {
 			surveyId: survey._id,
 			userId: req.userId,
 			userPseudo: req.userPseudo,
+			scanId: String(req.body.scanId || '').trim() || null,
 			...buildOpinionFraudFields({
 				result: fraudDecision,
 				identity: req.riskIdentity || {},
@@ -378,6 +385,20 @@ exports.submitOpinion = async (req, res) => {
 					surveyId: survey._id,
 					reason: 'survey-vote',
 				});
+				await recordVoteConversion({
+					surveyId: survey._id,
+					type: 'binary',
+					flash: true,
+					scanId: req.body.scanId,
+					userId: req.userId,
+					opinionId: opinion._id,
+					answer: opinion.answer,
+				});
+				await emitAdminAnalyticsUpdate(io, {
+					surveyId: survey._id,
+					type: 'binary',
+					flash: true,
+				});
 			} catch (postCommitError) {
 				console.error('surveyFlash.submitOpinion.postCommit error:', postCommitError);
 			}
@@ -421,30 +442,27 @@ exports.getDetailedResults = async (req, res) => {
 		);
 
 		const allowAdminFilters = await canManageSurveyByOrganization(survey, req.userId);
-		const canViewResults = hasParticipated || allowAdminFilters;
+		const canVote = !survey.isClosed && !hasParticipated;
+		const canViewResults = hasParticipated;
 		if (!canViewResults) {
-			if (survey.isClosed) {
-				return res.status(403).json({
-					message:
-						'Ce sondage est clôturé. Les résultats sont réservés aux votants.',
-				});
-			}
-			return res
-				.status(403)
-				.json({ message: 'Votez pour accéder aux résultats en temps réel.' });
+			return res.status(403).json({
+				code: allowAdminFilters ? 'ADMIN_VOTE_REQUIRED' : 'VOTE_REQUIRED',
+				message:
+					survey.isClosed ?
+						'Ce sondage est clôturé. Les résultats sont réservés aux votants.'
+					: allowAdminFilters ?
+						'Votez depuis la page administrateur pour accéder aux résultats.'
+					:	'Votez pour accéder aux résultats en temps réel.',
+				hasParticipated,
+				canVote,
+				canViewResults: false,
+			});
 		}
 
-		const cleanFilter = buildStatusFilter('clean');
-		const opinions = await OpinionFlash.find({
-			surveyId: survey._id,
-			...cleanFilter,
-		})
+		const opinions = await OpinionFlash.find({ surveyId: survey._id })
 			.sort({ createdAt: -1 })
 			.lean();
-		const integrity =
-			allowAdminFilters ?
-				await getIntegritySnapshotForSurvey(OpinionFlash, survey._id)
-			:	null;
+		const integrity = null;
 		let adminProfilesByUserId = null;
 
 		if (allowAdminFilters) {

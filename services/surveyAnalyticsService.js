@@ -70,6 +70,12 @@ function normalizeCountryFromRequest(req) {
 	};
 }
 
+function isKnownCountry(country = {}) {
+	const code = String(country?.countryCode || '').trim().toUpperCase();
+	const name = String(country?.countryName || '').trim().toLowerCase();
+	return Boolean(code && code !== 'XX' && name && name !== 'unknown' && name !== 'inconnu');
+}
+
 function getReferrerHost(referrer = '') {
 	try {
 		return new URL(String(referrer || '')).hostname.slice(0, 180);
@@ -212,7 +218,7 @@ function buildProfile({ opinions = [], scanEvents = [], type = 'binary' }) {
 		(scanEvents || []).map((event) => [String(event.scanId || ''), event]).filter(([key]) => key),
 	);
 	const allScanCountryCounts = countBy(
-		scanEvents || [],
+		(scanEvents || []).filter(isKnownCountry),
 		(event) => `${String(event.countryCode || 'XX').toUpperCase()}|${event.countryName || 'Unknown'}`,
 	);
 	const ageCounts = new Map();
@@ -230,14 +236,15 @@ function buildProfile({ opinions = [], scanEvents = [], type = 'binary' }) {
 		genderCounts.set(gender, (genderCounts.get(gender) || 0) + 1);
 		const countryCode = String(scan?.countryCode || '').toUpperCase();
 		const countryName = String(scan?.countryName || '');
-		if (countryCode) {
+		const hasKnownCountry = isKnownCountry({ countryCode, countryName });
+		if (hasKnownCountry) {
 			const countryKey = `${countryCode}|${countryName || countryCode}`;
 			countryCounts.set(countryKey, (countryCounts.get(countryKey) || 0) + 1);
 		}
 		byOption[option] ||= { ages: {}, genders: {}, countries: {} };
 		byOption[option].ages[band] = Number(byOption[option].ages[band] || 0) + 1;
 		byOption[option].genders[gender] = Number(byOption[option].genders[gender] || 0) + 1;
-		if (countryCode) {
+		if (hasKnownCountry) {
 			byOption[option].countries[countryCode] = Number(byOption[option].countries[countryCode] || 0) + 1;
 		}
 	});
@@ -260,7 +267,7 @@ function buildProfile({ opinions = [], scanEvents = [], type = 'binary' }) {
 	const topCountry = countryEntries.slice(0, 1).map(([key, count]) => {
 		const [countryCode, countryName] = String(key).split('|');
 		return { countryCode, countryName, count };
-	})[0] || { countryCode: 'XX', countryName: 'Unknown', count: 0 };
+	})[0] || { countryCode: null, countryName: 'Non renseigné', count: 0 };
 
 	return {
 		topAgeBand: topAge,
@@ -273,6 +280,36 @@ function buildProfile({ opinions = [], scanEvents = [], type = 'binary' }) {
 			return { countryCode, countryName, count };
 		}),
 		byOption,
+	};
+}
+
+function buildEmojiTimeline(emojiEvents = [], limit = 5) {
+	const events = (emojiEvents || [])
+		.map((event) => ({
+			minute: minuteKey(event?.createdAt),
+			emoji: String(event?.metadata?.emoji || event?.emoji || '').trim(),
+		}))
+		.filter((event) => event.minute && event.emoji);
+	const emojiTotals = countBy(events, (event) => event.emoji);
+	const series = topFromMap(emojiTotals, limit, (emoji, count) => ({ emoji, count }));
+	const trackedEmojis = new Set(series.map((item) => item.emoji));
+	const minuteValues = new Map();
+
+	events.forEach((event) => {
+		if (!trackedEmojis.has(event.emoji)) return;
+		if (!minuteValues.has(event.minute)) minuteValues.set(event.minute, {});
+		const values = minuteValues.get(event.minute);
+		values[event.emoji] = Number(values[event.emoji] || 0) + 1;
+	});
+
+	const points = Array.from(minuteValues.entries())
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([minute, values]) => ({ minute, values }));
+
+	return {
+		series,
+		points,
+		totalEvents: events.length,
 	};
 }
 
@@ -373,6 +410,7 @@ function buildAdminAnalyticsSnapshot({
 				const [minute, emoji] = String(key).split('|');
 				return { minute, emoji, count };
 			}),
+			emojiTimeline: buildEmojiTimeline(emojiEvents),
 		},
 		profile: buildProfile({ opinions: currentOpinions, scanEvents: scans, type }),
 		retention: {

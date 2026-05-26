@@ -71,6 +71,14 @@ const scanEvents = [
 		countryName: 'France',
 		createdAt: minutesAfter(2),
 	},
+	{
+		type: 'scan',
+		scanId: 'scan-unknown',
+		source: 'direct',
+		countryCode: 'XX',
+		countryName: 'Unknown',
+		createdAt: minutesAfter(3),
+	},
 ];
 
 const chatMessages = [
@@ -105,18 +113,18 @@ const snapshot = buildAdminAnalyticsSnapshot({
 	now: minutesAfter(5),
 });
 
-assert.equal(snapshot.acquisition.totalScans, 3);
+assert.equal(snapshot.acquisition.totalScans, 4);
 assert.deepEqual(snapshot.acquisition.topCountries.slice(0, 2), [
 	{ countryCode: 'FR', countryName: 'France', count: 2 },
 	{ countryCode: 'CI', countryName: "Cote d'Ivoire", count: 1 },
 ]);
 assert.equal(snapshot.acquisition.sources.tv, 1);
 assert.equal(snapshot.acquisition.sources.social, 1);
-assert.equal(snapshot.acquisition.sources.direct, 1);
+assert.equal(snapshot.acquisition.sources.direct, 2);
 assert.equal('replay' in snapshot.acquisition.sources, false);
 
 assert.equal(snapshot.conversion.votersRealtime, 3);
-assert.equal(snapshot.conversion.scanToVoteRate, 67);
+assert.equal(snapshot.conversion.scanToVoteRate, 50);
 assert.equal(snapshot.conversion.averageScanToVoteSeconds, 60);
 assert.equal(snapshot.conversion.returningVotersFromPreviousSurvey, 1);
 assert.equal(snapshot.conversion.previousSurveyVoters, 2);
@@ -131,10 +139,14 @@ assert.equal(snapshot.chat.activeUsersRealtime, 2);
 assert.equal(snapshot.chat.voterToChatParticipantRate, 33);
 assert.equal(snapshot.chat.returningChatParticipants, 1);
 assert.equal(snapshot.chat.topEmojiPeaks[0].emoji, '🔥');
+assert.equal(snapshot.chat.emojiTimeline.series[0].emoji, '🔥');
+assert.equal(snapshot.chat.emojiTimeline.points.length >= 2, true);
+assert.equal(snapshot.chat.emojiTimeline.points[0].values['🔥'], 2);
 
 assert.equal(snapshot.profile.topAgeBand.label, '18-24');
 assert.equal(snapshot.profile.dominantGender.label, 'femme');
 assert.equal(snapshot.profile.dominantCountry.countryCode, 'FR');
+assert.equal(snapshot.profile.countries.some((country) => country.countryCode === 'XX'), false);
 
 assert.equal(snapshot.retention.returningVoters, 1);
 assert.equal(snapshot.retention.returningChatParticipants, 1);
